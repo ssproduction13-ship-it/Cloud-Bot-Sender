@@ -378,8 +378,12 @@ async def main():
 
         if uid == ADMIN_ID:
             user = get_user(uid)
-            if user and user["status"] == "pending":
+            if user and user["status"] in ("pending", "beta", "blocked"):
                 approve_user(uid, trial_days=3650)  # Админ — «вечный» триал
+            elif user and user["status"] == "paid":
+                from datetime import datetime
+                if not user["expires_at"] or datetime.fromisoformat(user["expires_at"]) < datetime.utcnow():
+                    activate_subscription(uid, 3650)
 
         user = get_user(uid)
         status = user["status"] if user else "pending"
