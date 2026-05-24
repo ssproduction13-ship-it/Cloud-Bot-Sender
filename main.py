@@ -126,7 +126,7 @@ KCAL:{{ккал}}"""
 async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
-        model="google/gemini-2.0-flash-exp:free",
+        model="google/gemini-flash-1.5-8b:free",
         messages=[
             {
                 "role": "user",
@@ -148,7 +148,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
 
     nutrition = await openai_client.chat.completions.create(
-        model="google/gemini-2.0-flash-exp:free",
+        model="google/gemini-flash-1.5-8b:free",
         messages=[
             {
                 "role": "system",
@@ -185,7 +185,7 @@ KCAL:{{ккал}}"""
 
 async def analyze_food_text(description: str) -> tuple[str, int | None]:
     response = await openai_client.chat.completions.create(
-        model="google/gemini-2.0-flash-exp:free",
+        model="google/gemini-flash-1.5-8b:free",
         messages=[
             {
                 "role": "system",
@@ -1032,12 +1032,13 @@ async def main():
             await message.answer("Нет пользователей.")
             return
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
-        lines = ["👥 *Пользователи:*\n"]
+        lines = ["👥 Пользователи:\n"]
         for u in users[:30]:
-            lines.append(
-                f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`"
-            )
-        await message.answer("\n".join(lines), parse_mode="Markdown")
+            name = (u["first_name"] or "").replace("_", " ").replace("*", "").replace("`", "")
+            un = u["username"] or ""
+            label = f"{name} (@{un})" if un else f"{name} (id{u['telegram_id']})"
+            lines.append(f"{icons.get(u['status'], '❓')} {label} — {u['telegram_id']}")
+        await message.answer("\n".join(lines))
 
     async def show_stats(message: Message):
         s = get_total_stats()
