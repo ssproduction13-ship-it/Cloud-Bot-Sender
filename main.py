@@ -57,6 +57,8 @@ REFERRAL_BONUS_DAYS = 7
 openai_client = AsyncOpenAI(
     api_key=os.environ["OPENROUTER_API_KEY"],
     base_url="https://openrouter.ai/api/v1",
+    max_retries=5,
+    timeout=60,
     default_headers={
         "HTTP-Referer": "https://github.com/ssproduction13-ship-it/Cloud-Bot-Sender",
         "X-Title": "ArdashevFood Bot",
