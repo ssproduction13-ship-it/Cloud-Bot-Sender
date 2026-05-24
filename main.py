@@ -126,7 +126,7 @@ KCAL:{{ккал}}"""
 async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
-        model="google/gemini-flash-1.5-8b:free",
+        model="google/gemma-4-31b-it:free",
         messages=[
             {
                 "role": "user",
@@ -148,7 +148,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
 
     nutrition = await openai_client.chat.completions.create(
-        model="google/gemini-flash-1.5-8b:free",
+        model="google/gemma-4-31b-it:free",
         messages=[
             {
                 "role": "system",
@@ -185,7 +185,7 @@ KCAL:{{ккал}}"""
 
 async def analyze_food_text(description: str) -> tuple[str, int | None]:
     response = await openai_client.chat.completions.create(
-        model="google/gemini-flash-1.5-8b:free",
+        model="google/gemma-4-31b-it:free",
         messages=[
             {
                 "role": "system",
