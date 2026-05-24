@@ -55,14 +55,10 @@ SUB_DAYS = 30
 REFERRAL_BONUS_DAYS = 7
 
 openai_client = AsyncOpenAI(
-    api_key=os.environ["OPENROUTER_API_KEY"],
-    base_url="https://openrouter.ai/api/v1",
-    max_retries=5,
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
+    max_retries=3,
     timeout=60,
-    default_headers={
-        "HTTP-Referer": "https://github.com/ssproduction13-ship-it/Cloud-Bot-Sender",
-        "X-Title": "ArdashevFood Bot",
-    },
 )
 
 # ── Conversation state ──
@@ -128,7 +124,7 @@ KCAL:{{ккал}}"""
 async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
-        model="google/gemma-4-31b-it:free",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
             {
                 "role": "user",
@@ -150,7 +146,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
 
     nutrition = await openai_client.chat.completions.create(
-        model="google/gemma-4-31b-it:free",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
             {
                 "role": "system",
@@ -187,7 +183,7 @@ KCAL:{{ккал}}"""
 
 async def analyze_food_text(description: str) -> tuple[str, int | None]:
     response = await openai_client.chat.completions.create(
-        model="google/gemma-4-31b-it:free",
+        model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
             {
                 "role": "system",
