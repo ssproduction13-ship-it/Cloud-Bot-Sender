@@ -135,14 +135,13 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/jpeg;base64,{b64}",
-                            "detail": "high",
                         },
                     },
                     {"type": "text", "text": VISION_PROMPT},
                 ],
             }
         ],
-        max_completion_tokens=300,
+        max_tokens=400,
     )
     desc = vision.choices[0].message.content or ""
     if "НЕ ЕДА" in desc.upper():
@@ -157,7 +156,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
             },
             {"role": "user", "content": NUTRITION_PROMPT.format(desc=desc)},
         ],
-        max_completion_tokens=300,
+        max_tokens=400,
     )
     raw = nutrition.choices[0].message.content or ""
     kcal = None
@@ -194,7 +193,7 @@ async def analyze_food_text(description: str) -> tuple[str, int | None]:
             },
             {"role": "user", "content": TEXT_NUTRITION_PROMPT.format(desc=description)},
         ],
-        max_completion_tokens=300,
+        max_tokens=400,
     )
     raw = response.choices[0].message.content or ""
     if "НЕ ЕДА" in raw.upper():
