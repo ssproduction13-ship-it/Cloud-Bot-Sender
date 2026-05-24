@@ -55,8 +55,12 @@ SUB_DAYS = 30
 REFERRAL_BONUS_DAYS = 7
 
 openai_client = AsyncOpenAI(
-    api_key=os.environ["OPENAI_API_KEY"],
-    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    api_key=os.environ["OPENROUTER_API_KEY"],
+    base_url="https://openrouter.ai/api/v1",
+    default_headers={
+        "HTTP-Referer": "https://github.com/ssproduction13-ship-it/Cloud-Bot-Sender",
+        "X-Title": "ArdashevFood Bot",
+    },
 )
 
 # ── Conversation state ──
@@ -120,7 +124,7 @@ KCAL:{{ккал}}"""
 async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
-        model="gpt-4o",
+        model="google/gemini-2.0-flash-exp:free",
         messages=[
             {
                 "role": "user",
@@ -143,7 +147,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
 
     nutrition = await openai_client.chat.completions.create(
-        model="gpt-4o",
+        model="google/gemini-2.0-flash-exp:free",
         messages=[
             {
                 "role": "system",
