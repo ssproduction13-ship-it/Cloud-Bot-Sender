@@ -151,13 +151,25 @@ def get_all_users(status_filter=None):
             return [dict(r) for r in cur.fetchall()]
 
 
-def record_usage(telegram_id, kcal=None):
+def record_usage(telegram_id, kcal=None) -> int:
     now = datetime.utcnow()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO usage (telegram_id, used_at, date, calories) VALUES (%s, %s, %s, %s)",
+                "INSERT INTO usage (telegram_id, used_at, date, calories) VALUES (%s, %s, %s, %s) RETURNING id",
                 (telegram_id, now.isoformat(), now.strftime("%Y-%m-%d"), kcal),
+            )
+            entry_id = cur.fetchone()[0]
+        conn.commit()
+    return entry_id
+
+
+def update_entry_calories(entry_id: int, new_kcal: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE usage SET calories=%s WHERE id=%s",
+                (new_kcal, entry_id),
             )
         conn.commit()
 
