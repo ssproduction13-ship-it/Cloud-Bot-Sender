@@ -40,6 +40,7 @@ from db import (
     register_referral,
     mark_referral_paid,
     get_referral_stats,
+    update_entry_calories,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -53,6 +54,7 @@ BETA_DAILY_LIMIT = 5
 SUB_PRICE_STARS = 150
 SUB_DAYS = 30
 REFERRAL_BONUS_DAYS = 7
+REFERRAL_JOIN_BONUS_DAYS = 3
 
 openai_client = AsyncOpenAI(
     api_key=os.environ["GROQ_API_KEY"],
@@ -71,6 +73,7 @@ STATES = {
     "CALC_WEIGHT": "calc_weight",
     "CALC_HEIGHT": "calc_height",
     "MANUAL_ENTRY": "manual_entry",
+    "CORRECT_ENTRY": "correct_entry",
 }
 
 # ── Кнопки меню ──
@@ -216,6 +219,28 @@ def user_label(row) -> str:
 def ref_link(uid: int) -> str:
     bot_un = BOT_USERNAME.lstrip("@") or "YOUR_BOT"
     return f"https://t.me/{bot_un}?start=ref_{uid}"
+
+
+def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="✏️ Скорректировать калории", callback_data=f"correct:{entry_id}"
+            )
+        ]]
+    )
+
+
+def ref_keyboard(uid: int) -> InlineKeyboardMarkup:
+    import urllib.parse
+    link = ref_link(uid)
+    share_text = "Считаю калории по фото еды 🍽 Попробуй бесплатно:"
+    share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(share_text)}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)
+        ]]
+    )
 
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
@@ -408,11 +433,18 @@ async def main():
         if referrer_id:
             register_referral(referrer_id, uid)
             try:
+                activate_subscription(referrer_id, REFERRAL_JOIN_BONUS_DAYS)
+                ref_user = get_user(referrer_id)
+                new_exp = (
+                    datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
+                    if ref_user and ref_user.get("expires_at") else "—"
+                )
                 safe_new_name = (name or f"id{uid}").replace("_", "\\_").replace("*", "\\*")
                 await bot.send_message(
                     referrer_id,
-                    f"👥 По твоей реферальной ссылке зарегистрировался *{safe_new_name}*!\n\n"
-                    f"🎁 Когда он оформит подписку, ты получишь *+{REFERRAL_BONUS_DAYS} дней* к подписке.",
+                    f"🎉 По твоей ссылке зарегистрировался *{safe_new_name}*!\n"
+                    f"*+{REFERRAL_JOIN_BONUS_DAYS} дня* начислено → подписка до *{new_exp}*\n\n"
+                    f"🎁 Когда он оформит подписку — получишь ещё *+{REFERRAL_BONUS_DAYS} дней*!",
                     parse_mode="Markdown",
                 )
             except Exception as e:
@@ -620,6 +652,21 @@ async def main():
             parse_mode="Markdown",
         )
 
+    # ── Коррекция результата ──
+    @dp.callback_query(F.data.startswith("correct:"))
+    async def cb_correct(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        try:
+            entry_id = int(callback.data.split(":")[1])
+        except (ValueError, IndexError):
+            return
+        user_states[uid] = {"state": STATES["CORRECT_ENTRY"], "data": {"entry_id": entry_id}}
+        await callback.message.edit_text(
+            "✏️ Введи правильное количество калорий (только число, например: 450):\n\n"
+            "Или /cancel для отмены."
+        )
+
     # ── Текстовые сообщения ──
     @dp.message(F.text)
     async def handle_text(message: Message):
@@ -765,20 +812,46 @@ async def main():
                 await message.answer("🔍 Считаю калории...")
                 try:
                     result, kcal = await analyze_food_text(text)
+                    entry_id = None
                     if kcal:
-                        record_usage(uid, kcal)
+                        entry_id = record_usage(uid, kcal)
                     progress = daily_progress_text(uid)
                     await message.answer(
                         result + progress,
                         parse_mode="Markdown",
                         reply_markup=main_keyboard(uid == ADMIN_ID),
                     )
+                    if kcal and entry_id:
+                        await message.answer(
+                            "Результат неточный? Нажми кнопку чтобы исправить:",
+                            reply_markup=result_keyboard(entry_id),
+                        )
                 except Exception as e:
                     log.error(f"analyze_food_text error: {e}")
                     await message.answer(
                         "⚠️ Не удалось рассчитать. Попробуй снова.",
                         reply_markup=main_keyboard(uid == ADMIN_ID),
                     )
+            return
+
+        if s == STATES["CORRECT_ENTRY"]:
+            entry_id = data.get("entry_id")
+            try:
+                new_kcal = int(re.sub(r"\D", "", text))
+                if new_kcal < 1 or new_kcal > 9999:
+                    raise ValueError
+            except (ValueError, TypeError):
+                await message.answer("Введи число от 1 до 9999 ккал:")
+                return
+            user_states.pop(uid, None)
+            if entry_id:
+                update_entry_calories(entry_id, new_kcal)
+            progress = daily_progress_text(uid)
+            await message.answer(
+                f"✅ Скорректировано: *{new_kcal} ккал*{progress}",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(uid == ADMIN_ID),
+            )
             return
 
     # ── Фото ──
@@ -812,7 +885,7 @@ async def main():
                 photo_bytes = (await client.get(url, timeout=15)).content
 
             result, kcal = await analyze_food_photo(photo_bytes)
-            record_usage(uid, kcal)
+            entry_id = record_usage(uid, kcal)
 
             progress = daily_progress_text(uid)
             hint = (
@@ -826,6 +899,11 @@ async def main():
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(uid == ADMIN_ID),
             )
+            if kcal:
+                await message.answer(
+                    "Результат неточный? Нажми кнопку чтобы исправить:",
+                    reply_markup=result_keyboard(entry_id),
+                )
 
         except Exception as e:
             log.error(f"Ошибка анализа: {e}")
@@ -998,11 +1076,13 @@ async def main():
         stats = get_referral_stats(uid)
         link = ref_link(uid)
         await message.answer(
-            f"🔗 *Твоя реферальная ссылка:*\n`{link}`\n\n"
-            f"👥 Приглашено: {stats['total']}\n"
-            f"💰 Оплатили: {stats['paid']}\n\n"
-            f"🎁 За каждого оплатившего — *+{REFERRAL_BONUS_DAYS} дней* к подписке!",
+            f"👥 *Пригласи друга — получи дни бесплатно!*\n\n"
+            f"🔗 Твоя ссылка:\n{link}\n\n"
+            f"🎁 За регистрацию друга — *+{REFERRAL_JOIN_BONUS_DAYS} дня*\n"
+            f"💰 За его оплату подписки — ещё *+{REFERRAL_BONUS_DAYS} дней*\n\n"
+            f"📊 Приглашено: {stats['total']}  |  Оплатили: {stats['paid']}",
             parse_mode="Markdown",
+            reply_markup=ref_keyboard(uid),
         )
 
     async def do_buy(message: Message, bot: Bot):
