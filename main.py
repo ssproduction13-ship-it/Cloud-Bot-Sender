@@ -72,6 +72,7 @@ STATES = {
     "CALC_AGE": "calc_age",
     "CALC_WEIGHT": "calc_weight",
     "CALC_HEIGHT": "calc_height",
+    "MANUAL_ENTRY": "manual_entry",
 }
 
 # ── Кнопки меню ──
@@ -82,15 +83,16 @@ BTN_REF = "👥 Пригласить"
 BTN_STATUS = "ℹ️ Статус"
 BTN_USERS = "👤 Пользователи"
 BTN_STATS = "📈 Статистика"
+BTN_ADD = "✏️ Добавить вручную"
 
-MENU_BUTTONS = {BTN_TODAY, BTN_GOAL, BTN_BUY, BTN_REF, BTN_STATUS, BTN_USERS, BTN_STATS}
+MENU_BUTTONS = {BTN_TODAY, BTN_GOAL, BTN_BUY, BTN_REF, BTN_STATUS, BTN_USERS, BTN_STATS, BTN_ADD}
 
 
 def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_GOAL)],
         [KeyboardButton(text=BTN_BUY), KeyboardButton(text=BTN_REF)],
-        [KeyboardButton(text=BTN_STATUS)],
+        [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_STATUS)],
     ]
     if is_admin:
         rows.append([KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_STATS)])
@@ -158,6 +160,45 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         max_completion_tokens=300,
     )
     raw = nutrition.choices[0].message.content or ""
+    kcal = None
+    m = re.search(r"KCAL:(\d+)", raw)
+    if m:
+        kcal = int(m.group(1))
+    display = re.sub(r"\s*KCAL:\d+", "", raw).strip()
+    return display, kcal
+
+
+TEXT_NUTRITION_PROMPT = """Ты — нутрициолог. Пользователь описал блюдо или продукт текстом.
+
+Блюдо: {desc}
+
+Если это не еда — ответь только: НЕ ЕДА
+
+Иначе ответь строго в формате:
+🍽 *{{название}}* (~{{вес}} г)
+
+🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
+
+💡 {{один короткий полезный факт, 1 предложение}}
+
+KCAL:{{ккал}}"""
+
+
+async def analyze_food_text(description: str) -> tuple[str, int | None]:
+    response = await openai_client.chat.completions.create(
+        model="google/gemini-2.0-flash-exp:free",
+        messages=[
+            {
+                "role": "system",
+                "content": "Точный нутрициолог. Отвечаешь строго по шаблону.",
+            },
+            {"role": "user", "content": TEXT_NUTRITION_PROMPT.format(desc=description)},
+        ],
+        max_completion_tokens=300,
+    )
+    raw = response.choices[0].message.content or ""
+    if "НЕ ЕДА" in raw.upper():
+        return "🙅 Это не похоже на еду. Введи название блюда или продукта.", None
     kcal = None
     m = re.search(r"KCAL:(\d+)", raw)
     if m:
@@ -617,6 +658,22 @@ async def main():
         if text == BTN_STATS and message.from_user.id == ADMIN_ID:
             await show_stats(message)
             return
+        if text == BTN_ADD:
+            user = get_user(uid)
+            ok, reason = access_check(user)
+            if not ok:
+                await deny(message, reason)
+                return
+            user_states[uid] = {"state": STATES["MANUAL_ENTRY"], "data": {}}
+            await message.answer(
+                "✏️ *Ручной ввод калорий*\n\n"
+                "Введи одно из:\n"
+                "• *Число* — напрямую запишет калории (например: `350`)\n"
+                "• *Название блюда* — бот рассчитает КБЖУ (например: `гречка с курицей 200г`)\n\n"
+                "Или нажми /cancel для отмены.",
+                parse_mode="Markdown",
+            )
+            return
 
         # ── Setup flow state machine ──
         if not state:
@@ -680,6 +737,51 @@ async def main():
             await message.answer(
                 "Выбери уровень активности:", reply_markup=activity_keyboard()
             )
+            return
+
+        if s == STATES["MANUAL_ENTRY"]:
+            user_states.pop(uid, None)
+            digits_only = re.sub(r"\D", "", text)
+            if digits_only and len(text.strip()) <= 6:
+                kcal = int(digits_only)
+                if kcal < 1 or kcal > 9999:
+                    await message.answer("Введи число от 1 до 9999 ккал:")
+                    user_states[uid] = {"state": STATES["MANUAL_ENTRY"], "data": {}}
+                    return
+                record_usage(uid, kcal)
+                progress = daily_progress_text(uid)
+                await message.answer(
+                    f"✅ Записано *{kcal} ккал*{progress}",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard(uid == ADMIN_ID),
+                )
+            else:
+                user = get_user(uid)
+                if user["status"] == "beta":
+                    used = get_daily_usage(uid)
+                    if used >= BETA_DAILY_LIMIT:
+                        await message.answer(
+                            f"⚠️ Лимит {BETA_DAILY_LIMIT} анализов в день исчерпан.",
+                            reply_markup=main_keyboard(uid == ADMIN_ID),
+                        )
+                        return
+                await message.answer("🔍 Считаю калории...")
+                try:
+                    result, kcal = await analyze_food_text(text)
+                    if kcal:
+                        record_usage(uid, kcal)
+                    progress = daily_progress_text(uid)
+                    await message.answer(
+                        result + progress,
+                        parse_mode="Markdown",
+                        reply_markup=main_keyboard(uid == ADMIN_ID),
+                    )
+                except Exception as e:
+                    log.error(f"analyze_food_text error: {e}")
+                    await message.answer(
+                        "⚠️ Не удалось рассчитать. Попробуй снова.",
+                        reply_markup=main_keyboard(uid == ADMIN_ID),
+                    )
             return
 
     # ── Фото ──
@@ -1074,6 +1176,29 @@ async def main():
                 f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`"
             )
         await message.answer("\n".join(lines), parse_mode="Markdown")
+
+    @dp.message(Command("myid"))
+    async def cmd_myid(message: Message):
+        uid = message.from_user.id
+        is_adm = uid == ADMIN_ID
+        await message.answer(
+            f"🆔 Твой Telegram ID: `{uid}`\n"
+            f"👑 Статус админа: {'✅ Да' if is_adm else '❌ Нет'}\n\n"
+            f"{'Всё верно — ты администратор.' if is_adm else f'Если ты администратор, установи TELEGRAM_CHAT_ID={uid} в переменных Railway.'}",
+            parse_mode="Markdown",
+        )
+
+    @dp.message(Command("cancel"))
+    async def cmd_cancel(message: Message):
+        uid = message.from_user.id
+        if uid in user_states:
+            user_states.pop(uid)
+            await message.answer(
+                "❌ Отменено.",
+                reply_markup=main_keyboard(uid == ADMIN_ID),
+            )
+        else:
+            await message.answer("Нечего отменять.")
 
     log.info("CalorieBot запущен.")
     await dp.start_polling(bot)
