@@ -55,8 +55,8 @@ SUB_DAYS = 30
 REFERRAL_BONUS_DAYS = 7
 
 openai_client = AsyncOpenAI(
-    api_key=os.environ["AI_INTEGRATIONS_OPENAI_API_KEY"],
-    base_url=os.environ["AI_INTEGRATIONS_OPENAI_BASE_URL"],
+    api_key=os.environ["OPENAI_API_KEY"],
+    base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 )
 
 # ── Conversation state ──
@@ -120,7 +120,7 @@ KCAL:{{ккал}}"""
 async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
-        model="gpt-5.1",
+        model="gpt-4o",
         messages=[
             {
                 "role": "user",
@@ -143,7 +143,7 @@ async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
         return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
 
     nutrition = await openai_client.chat.completions.create(
-        model="gpt-5.4",
+        model="gpt-4o",
         messages=[
             {
                 "role": "system",
