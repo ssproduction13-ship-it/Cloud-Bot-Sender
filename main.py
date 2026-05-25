@@ -601,18 +601,18 @@ def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
 def premium_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text=f"💳 {SUB_PRICE_STARS} ⭐ — 1 месяц  (~7 ₽/день)",
+            text=f"{SUB_PRICE_STARS} ⭐ — 1 месяц (~7 ₽/день)",
             callback_data="buy_sub:30",
         )],
         [InlineKeyboardButton(
-            text=f"💰 {SUB_PRICE_3M} ⭐ — 3 месяца  (~6 ₽/день, −20%)",
+            text=f"{SUB_PRICE_3M} ⭐ — 3 месяца (~6 ₽/день, −20%)",
             callback_data="buy_sub:90",
         )],
         [InlineKeyboardButton(
-            text=f"🏆 {SUB_PRICE_12M} ⭐ — 12 месяцев  (~4 ₽/день, −45%)",
+            text=f"{SUB_PRICE_12M} ⭐ — 12 месяцев (~4 ₽/день, −45%)",
             callback_data="buy_sub:365",
         )],
-        [InlineKeyboardButton(text="👥 Получить бесплатно (реферал)", callback_data="ref_screen")],
+        [InlineKeyboardButton(text="Получить бесплатно — реферал", callback_data="ref_screen")],
     ])
 
 
@@ -908,13 +908,13 @@ async def send_expiry_reminders(bot: Bot):
                 exp_fmt = exp
             when = "завтра" if days_left == 1 else "через 3 дня"
             msg = (
-                f"⏰ *{name}, подписка истекает {when}!*\n\n"
-                f"📅 Дата окончания: *{exp_fmt}*\n\n"
-                f"Продли сейчас — дни добавятся к текущей подписке, стрик и история сохранятся 🔥\n\n"
-                f"💡 Выбери тариф:\n"
+                f"*{name}, подписка истекает {when}*\n\n"
+                f"Дата окончания: *{exp_fmt}*\n\n"
+                f"Продли сейчас — дни добавятся к текущей подписке, стрик и история сохранятся.\n\n"
+                f"Тарифы:\n"
                 f"• 1 мес — 150 ⭐ (~7 ₽/день)\n"
-                f"• 3 мес — 360 ⭐ (~6 ₽/день) 🔥\n"
-                f"• 12 мес — 990 ⭐ (~4 ₽/день) 🏆"
+                f"• 3 мес — 360 ⭐ (~6 ₽/день)\n"
+                f"• 12 мес — 990 ⭐ (~4 ₽/день)"
             )
             try:
                 await bot.send_message(
@@ -2467,41 +2467,40 @@ async def main():
             dl = max((exp_dt - _utcnow()).days, 0)
             await send_fn(
                 f"💎 *Подписка активна*\n\n"
-                f"📅 Действует до *{exp}* — осталось *{dl} дн.*\n\n"
-                f"✅ Все возможности разблокированы 🚀\n\n"
+                f"Действует до *{exp}* — осталось *{dl} дн.*\n\n"
                 f"━━━━━━━━━━━━━━━━\n"
-                f"🔄 *Продлить заранее?*\n"
+                f"*Продлить заранее?*\n"
                 f"Дни добавятся к текущей подписке:\n"
                 f"• 1 мес — 150 ⭐ (~7 ₽/день)\n"
-                f"• 3 мес — 360 ⭐ (~6 ₽/день) 🔥\n"
-                f"• 12 мес — 990 ⭐ (~4 ₽/день) 🏆",
+                f"• 3 мес — 360 ⭐ (~6 ₽/день)\n"
+                f"• 12 мес — 990 ⭐ (~4 ₽/день)",
                 parse_mode="Markdown",
                 reply_markup=premium_keyboard(),
             )
             return
 
         await send_fn(
-            "⭐ *Premium подписка*\n\n"
+            "*Premium подписка*\n\n"
             "━━━━━━━━━━━━━━━━\n"
-            "🆓 *Бесплатно*\n"
+            "*Бесплатно*\n"
             "• 5 анализов в день\n"
             "• Базовое КБЖУ\n"
             "• Дневной трекер\n\n"
-            "💎 *Premium — 150 ⭐ / месяц*\n"
-            "• Безлимитные анализы 📸\n"
-            "• Умный AI-комментарий тренера\n"
-            "• Ежедневные утро/вечер итоги ☀️🌙\n"
-            "• Недельные отчёты 📊\n"
-            "• Трекер веса и прогресс\n"
-            "• Стрики и ачивки 🔥\n"
-            "• Balance Score дня /10\n"
-            "• 🍽 AI-план питания на день\n"
-            "• 💧 Трекер воды (дневная норма)\n"
+            "*Premium — 150 ⭐ / месяц*\n"
+            "• Безлимитные анализы\n"
+            "• AI-комментарий тренера\n"
+            "• Утро/вечер итоги дня\n"
+            "• Недельные отчёты\n"
+            "• Трекер веса\n"
+            "• Стрики и ачивки\n"
+            "• Balance Score дня\n"
+            "• AI-план питания на день\n"
+            "• Трекер воды\n"
             "━━━━━━━━━━━━━━━━\n\n"
-            "💡 *Выбери тариф:*\n"
+            "Тарифы:\n"
             "• 1 мес — 150 ⭐ (~7 ₽/день)\n"
-            "• 3 мес — 360 ⭐ (~6 ₽/день) 🔥\n"
-            "• 12 мес — 990 ⭐ (~4 ₽/день) 🏆",
+            "• 3 мес — 360 ⭐ (~6 ₽/день)\n"
+            "• 12 мес — 990 ⭐ (~4 ₽/день)",
             parse_mode="Markdown",
             reply_markup=premium_keyboard(),
         )
