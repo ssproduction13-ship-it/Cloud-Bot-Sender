@@ -1,4 +1,5 @@
 import os
+import json
 import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
@@ -83,6 +84,13 @@ def init_db():
                     weight_kg   REAL,
                     logged_at   TEXT DEFAULT (NOW()::TEXT),
                     date        TEXT DEFAULT (CURRENT_DATE::TEXT)
+                );
+
+                CREATE TABLE IF NOT EXISTS onboard_state (
+                    telegram_id BIGINT PRIMARY KEY,
+                    state       TEXT NOT NULL,
+                    data_json   TEXT DEFAULT '{}',
+                    updated_at  TEXT DEFAULT (NOW()::TEXT)
                 );
             """)
 
@@ -204,6 +212,60 @@ def mark_onboarded(telegram_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET onboarded=1 WHERE telegram_id=%s", (telegram_id,))
+        conn.commit()
+
+
+# ── Onboarding persistent state ─────────────────────────────────────────────
+
+def save_onboard_state(telegram_id: int, state: str, data: dict) -> None:
+    """Persist onboarding FSM state so it survives bot restarts."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO onboard_state (telegram_id, state, data_json, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (telegram_id) DO UPDATE
+                    SET state      = EXCLUDED.state,
+                        data_json  = EXCLUDED.data_json,
+                        updated_at = EXCLUDED.updated_at
+                """,
+                (telegram_id, state, json.dumps(data, default=str),
+                 datetime.utcnow().isoformat()),
+            )
+        conn.commit()
+
+
+def load_onboard_state(telegram_id: int) -> dict | None:
+    """Return persisted onboarding state or None if absent / expired (>24 h)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT state, data_json, updated_at FROM onboard_state WHERE telegram_id=%s",
+                (telegram_id,),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    state, data_json, updated_at = row
+    try:
+        ts = datetime.fromisoformat(updated_at)
+        if (datetime.utcnow() - ts).total_seconds() > 86400:
+            return None
+    except Exception:
+        pass
+    try:
+        data = json.loads(data_json) if data_json else {}
+    except Exception:
+        data = {}
+    return {"state": state, "data": data}
+
+
+def clear_onboard_state(telegram_id: int) -> None:
+    """Remove persisted onboarding state after completion or cancellation."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM onboard_state WHERE telegram_id=%s", (telegram_id,))
         conn.commit()
 
 
