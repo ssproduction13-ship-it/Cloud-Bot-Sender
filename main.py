@@ -1308,14 +1308,19 @@ async def main():
         await callback.answer()
         state_obj = user_states.get(uid, {})
         gender = "m" if callback.data == "gender_m" else "f"
-        state_obj.setdefault("data", {})["gender"] = gender
 
         cur_state = state_obj.get("state", "")
+        cur_data   = state_obj.get("data", {})
+        cur_data["gender"] = gender
 
-        # Onboarding flow: after age entry we wait for gender
-        if cur_state == "onboard_wait_gender":
-            state_obj["state"] = "onboard_wait_activity"
-            user_states[uid] = state_obj
+        # Onboarding flow: after age we wait for gender → then activity
+        if cur_state == STATES["ONBOARD_WAIT_GENDER"]:
+            cur_data["_from_onboard"] = True          # ensure flag is present
+            user_states[uid] = {
+                "state": STATES["ONBOARD_WAIT_ACTIVITY"],
+                "data":  cur_data,
+                "_ts":   datetime.utcnow(),
+            }
             await callback.message.edit_text(
                 f"{'♂️' if gender == 'm' else '♀️'} Записал!\n\nУровень активности:",
                 parse_mode="Markdown",
@@ -1324,7 +1329,11 @@ async def main():
             return
 
         # Regular goal-calc flow
-        user_states[uid] = {"state": STATES["CALC_WEIGHT"], "data": state_obj["data"]}
+        user_states[uid] = {
+            "state": STATES["CALC_WEIGHT"],
+            "data":  cur_data,
+            "_ts":   datetime.utcnow(),
+        }
         await callback.message.edit_text(
             "Введи свой вес в кг:\n_(например: 75 или 75.5)_",
             parse_mode="Markdown",
@@ -1334,50 +1343,60 @@ async def main():
     async def cb_activity(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
-        state_obj = user_states.get(uid, {})
-        activity = float(callback.data.split("_")[1])
-        d = state_obj.get("data", {})
-        d["activity"] = activity
+        try:
+            state_obj = user_states.get(uid, {})
+            activity  = float(callback.data.split("_")[1])
+            d = state_obj.get("data", {})
+            d["activity"] = activity
 
-        gender    = d.get("gender", "m")
-        age       = d.get("age", 25)
-        weight    = d.get("weight", 70.0)
-        height    = d.get("height", 170.0)
-        goal_type = d.get("goal_type", "track")
+            gender    = d.get("gender", "m")
+            age       = d.get("age", 25)
+            weight    = d.get("weight", 70.0)
+            height    = d.get("height", 170.0)
+            goal_type = d.get("goal_type", "track")
 
-        tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
+            tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
 
-        set_daily_goal(
-            uid, tdee,
-            protein_goal=protein,
-            goal_type=goal_type,
-            weight_kg=weight,
-            height_cm=height,
-            age=age,
-            gender=gender,
-        )
-
-        is_onboarding = d.get("_from_onboard") or state_obj.get("state") == "onboard_wait_activity"
-        user_states.pop(uid, None)
-
-        if is_onboarding:
-            mark_onboarded(uid)
-            is_admin = uid == ADMIN_ID
-            await callback.message.edit_text(
-                f"🔥 *Готово!*\n\n"
-                f"Твоя цель:\n"
-                f"🎯 *{tdee} ккал* в день\n"
-                f"💪 *{protein} г белка*\n\n"
-                f"Теперь просто отправляй фото еды 📸",
-                parse_mode="Markdown",
+            set_daily_goal(
+                uid, tdee,
+                protein_goal=protein,
+                goal_type=goal_type,
+                weight_kg=weight,
+                height_cm=height,
+                age=age,
+                gender=gender,
             )
-            await bot.send_message(uid, "Главное меню 👇", reply_markup=main_keyboard(is_admin))
-        else:
-            await callback.message.edit_text(
-                f"✅ *Норма установлена!*\n\n"
-                f"🎯 {tdee} ккал/день\n"
-                f"💪 Белок: {protein}г",
-                parse_mode="Markdown",
+
+            is_onboarding = (
+                d.get("_from_onboard")
+                or state_obj.get("state") == STATES["ONBOARD_WAIT_ACTIVITY"]
+            )
+            user_states.pop(uid, None)
+
+            if is_onboarding:
+                mark_onboarded(uid)
+                is_admin = uid == ADMIN_ID
+                await callback.message.edit_text(
+                    f"🔥 *Готово!*\n\n"
+                    f"Твоя цель:\n"
+                    f"🎯 *{tdee} ккал* в день\n"
+                    f"💪 *{protein} г белка*\n\n"
+                    f"Теперь просто отправляй фото еды 📸",
+                    parse_mode="Markdown",
+                )
+                await bot.send_message(uid, "Главное меню 👇", reply_markup=main_keyboard(is_admin))
+            else:
+                await callback.message.edit_text(
+                    f"✅ *Норма установлена!*\n\n"
+                    f"🎯 {tdee} ккал/день\n"
+                    f"💪 Белок: {protein}г",
+                    parse_mode="Markdown",
+                )
+        except Exception as e:
+            log.error(f"cb_activity error uid={uid}: {e}")
+            user_states.pop(uid, None)
+            await callback.message.answer(
+                "⚠️ Что-то пошло не так. Попробуй заново — нажми /start",
             )
 
     # ── Profile inline callbacks ───────────────────────────────────────────────
@@ -1665,9 +1684,10 @@ async def main():
                 return
             _set_state(uid, STATES["MANUAL_ENTRY"])
             await message.answer(
-                "✍️ Напиши, что съел:\n\n"
-                "_Например: «борщ 300г», «яблоко», «овсянка 100г с молоком»_\n\n"
-                "Или /cancel для отмены",
+                "✍️ *Что добавить в дневник?*\n\n"
+                "📝 Опиши блюдо: «борщ 300г», «яблоко», «куриная грудка 150г»\n"
+                "🔢 Или просто введи калории: «450»\n\n"
+                "_/cancel — отмена_",
                 parse_mode="Markdown",
             )
             return
@@ -2041,6 +2061,37 @@ async def main():
                     )
                     return
 
+            # ── Direct calorie input: just a number ─────────────────────────
+            try:
+                kcal_direct = int(text.strip())
+                if 50 <= kcal_direct <= 9999:
+                    entry_id = record_usage(uid, kcal_direct, None, None, None,
+                                            f"запись {kcal_direct} ккал")
+                    streak, milestone = update_streak(uid, user=user)
+                    macros  = get_daily_macros(uid)
+                    fu      = get_user(uid)
+                    progress = daily_progress_text(uid, user=fu, macros=macros)
+                    hint = "\n\n_Установи норму в ⚙️ Профиль_" if not user.get("daily_goal") else ""
+                    user_states.pop(uid, None)
+                    await message.answer(
+                        f"✅ *{kcal_direct} ккал* записано{progress}{hint}",
+                        parse_mode="Markdown",
+                        reply_markup=main_keyboard(uid == ADMIN_ID),
+                    )
+                    await message.answer(
+                        "Неточно? Можно исправить:", reply_markup=result_keyboard(entry_id)
+                    )
+                    if milestone and streak in STREAK_MILESTONES:
+                        await message.answer(
+                            f"🎉 *Ачивка разблокирована!*\n"
+                            f"_{STREAK_MILESTONES[streak]}_\n\nПродолжай! 💪",
+                            parse_mode="Markdown",
+                        )
+                    return
+            except ValueError:
+                pass  # not a plain number → fall through to AI analysis
+
+            # ── AI food analysis ────────────────────────────────────────────
             thinking_msg = await message.answer("🤔 *Считаю...*", parse_mode="Markdown")
             try:
                 display, kcal, protein, fat, carbs, food_name = await analyze_food_text(text)
