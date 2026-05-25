@@ -486,16 +486,12 @@ def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
 
 
 def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
-    """Inline keyboard listing today's entries with edit/delete per entry."""
+    """Inline keyboard listing today's entries — calories + delete only."""
     rows = []
-    for e in entries:
-        name = (e["food_name"] or "запись")[:22]
+    for i, e in enumerate(entries, 1):
         kcal = e["calories"] or 0
-        used_at = e.get("used_at") or ""
-        time_str = used_at[11:16] if len(used_at) > 15 else ""
-        label = f"{time_str}  {name} — {kcal} ккал" if time_str else f"{name} — {kcal} ккал"
         rows.append([
-            InlineKeyboardButton(text=label[:40], callback_data=f"edit_e:{e['id']}"),
+            InlineKeyboardButton(text=f"{i}. {kcal} ккал", callback_data=f"edit_e:{e['id']}"),
             InlineKeyboardButton(text="🗑", callback_data=f"del_e:{e['id']}"),
         ])
     rows.append([InlineKeyboardButton(text="🗑 Сбросить весь день", callback_data="reset_day")])
