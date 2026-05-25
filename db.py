@@ -10,12 +10,10 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 
 _pool: ThreadedConnectionPool | None = None
 
-
 def _init_pool():
     global _pool
     if _pool is None:
         _pool = ThreadedConnectionPool(1, 10, DATABASE_URL)
-
 
 @contextmanager
 def get_conn():
@@ -28,7 +26,6 @@ def get_conn():
         raise
     finally:
         _pool.putconn(conn)
-
 
 def init_db():
     with get_conn() as conn:
@@ -114,10 +111,7 @@ def init_db():
                 ("onboarded",        "INTEGER DEFAULT 0"),
             ]
             for col, definition in new_user_cols:
-                try:
-                    cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
-                except Exception:
-                    conn.rollback()
+                cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
 
             new_usage_cols = [
                 ("protein_g", "REAL"),
@@ -126,16 +120,11 @@ def init_db():
                 ("food_name", "TEXT"),
             ]
             for col, definition in new_usage_cols:
-                try:
-                    cur.execute(f"ALTER TABLE usage ADD COLUMN {col} {definition}")
-                except Exception:
-                    conn.rollback()
+                cur.execute(f"ALTER TABLE usage ADD COLUMN IF NOT EXISTS {col} {definition}")
 
         conn.commit()
 
-
 # ── Users ──────────────────────────────────────────────────────────────────
-
 
 def upsert_user(telegram_id, username, first_name, referred_by=None):
     with get_conn() as conn:
@@ -152,14 +141,12 @@ def upsert_user(telegram_id, username, first_name, referred_by=None):
             )
         conn.commit()
 
-
 def get_user(telegram_id):
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM users WHERE telegram_id=%s", (telegram_id,))
             row = cur.fetchone()
             return dict(row) if row else None
-
 
 def set_status(telegram_id, status):
     with get_conn() as conn:
@@ -169,7 +156,6 @@ def set_status(telegram_id, status):
                 (status, telegram_id),
             )
         conn.commit()
-
 
 def approve_user(telegram_id, trial_days=3):
     expires = (datetime.utcnow() + timedelta(days=trial_days)).isoformat()
@@ -181,14 +167,12 @@ def approve_user(telegram_id, trial_days=3):
             )
         conn.commit()
 
-
 def is_trial_expired(user_or_id) -> bool:
     """Accept either a user dict (no extra DB query) or a telegram_id."""
     user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
     if not user or not user.get("trial_expires_at"):
         return True
     return datetime.utcnow() > datetime.fromisoformat(user["trial_expires_at"])
-
 
 def set_daily_goal(telegram_id, goal, protein_goal=None, goal_type=None,
                    weight_kg=None, height_cm=None, age=None, gender=None):
@@ -214,7 +198,6 @@ def set_daily_goal(telegram_id, goal, protein_goal=None, goal_type=None,
             )
         conn.commit()
 
-
 def clear_all_goals():
     """Set daily_goal, protein_goal, goal_type, weight_kg, height_cm, age, gender to NULL for every user."""
     with get_conn() as conn:
@@ -229,15 +212,11 @@ def clear_all_goals():
             cur.execute("SELECT COUNT(*) FROM users")
             return cur.fetchone()[0]
 
-
 def mark_onboarded(telegram_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET onboarded=1 WHERE telegram_id=%s", (telegram_id,))
         conn.commit()
-
-
-
 
 def set_user_goals(telegram_id, *, daily_goal, protein_goal, weight_kg,
                    height_cm, age, gender, goal_type):
@@ -274,7 +253,6 @@ def save_onboard_state(telegram_id: int, state: str, data: dict) -> None:
             )
         conn.commit()
 
-
 def load_onboard_state(telegram_id: int) -> dict | None:
     """Return persisted onboarding state or None if absent / expired (>24 h)."""
     with get_conn() as conn:
@@ -299,14 +277,12 @@ def load_onboard_state(telegram_id: int) -> dict | None:
         data = {}
     return {"state": state, "data": data}
 
-
 def clear_onboard_state(telegram_id: int) -> None:
     """Remove persisted onboarding state after completion or cancellation."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM onboard_state WHERE telegram_id=%s", (telegram_id,))
         conn.commit()
-
 
 def activate_subscription(telegram_id, days):
     user = get_user(telegram_id)
@@ -328,14 +304,12 @@ def activate_subscription(telegram_id, days):
             )
         conn.commit()
 
-
 def check_subscription_expired(user_or_id) -> bool:
     """Accept either a user dict (no extra DB query) or a telegram_id."""
     user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
     if not user or not user.get("expires_at"):
         return True
     return datetime.utcnow() > datetime.fromisoformat(user["expires_at"])
-
 
 def get_all_users(status_filter=None):
     with get_conn() as conn:
@@ -348,7 +322,6 @@ def get_all_users(status_filter=None):
             else:
                 cur.execute("SELECT * FROM users ORDER BY created_at DESC")
             return [dict(r) for r in cur.fetchall()]
-
 
 def get_active_users():
     week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -365,9 +338,7 @@ def get_active_users():
             )
             return [dict(r) for r in cur.fetchall()]
 
-
 # ── Streak ─────────────────────────────────────────────────────────────────
-
 
 def update_streak(telegram_id, user=None) -> tuple[int, bool]:
     """Pass pre-fetched user dict to avoid an extra DB round-trip."""
@@ -406,9 +377,7 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
 
     return streak, milestone
 
-
 # ── Usage & Macros ─────────────────────────────────────────────────────────
-
 
 def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
                  food_name=None) -> int:
@@ -426,7 +395,6 @@ def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
         conn.commit()
     return entry_id
 
-
 def update_entry_calories(entry_id: int, new_kcal: int):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -435,7 +403,6 @@ def update_entry_calories(entry_id: int, new_kcal: int):
                 (new_kcal, entry_id),
             )
         conn.commit()
-
 
 def get_daily_usage(telegram_id):
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -446,7 +413,6 @@ def get_daily_usage(telegram_id):
                 (telegram_id, today),
             )
             return cur.fetchone()[0]
-
 
 def get_daily_macros(telegram_id):
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -468,7 +434,6 @@ def get_daily_macros(telegram_id):
                 "carbs": round(row[3]),
             }
 
-
 def get_entries_today(telegram_id):
     today = datetime.utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
@@ -481,14 +446,12 @@ def get_entries_today(telegram_id):
             )
             return [dict(r) for r in cur.fetchall()]
 
-
 def delete_entry(entry_id: int):
     """Delete a single usage entry by id."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM usage WHERE id=%s", (entry_id,))
         conn.commit()
-
 
 def reset_today_entries(telegram_id: int):
     """Delete all usage entries for today for a given user."""
@@ -501,7 +464,6 @@ def reset_today_entries(telegram_id: int):
             )
         conn.commit()
 
-
 def get_calories_for_date(telegram_id, date_str):
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -511,9 +473,7 @@ def get_calories_for_date(telegram_id, date_str):
             )
             return int(cur.fetchone()[0])
 
-
 # ── Weekly stats ───────────────────────────────────────────────────────────
-
 
 def get_weekly_stats(telegram_id):
     today = datetime.utcnow().date()
@@ -551,9 +511,7 @@ def get_weekly_stats(telegram_id):
         "dates": days,
     }
 
-
 # ── Weight logs ────────────────────────────────────────────────────────────
-
 
 def add_weight_log(telegram_id, weight_kg):
     now = datetime.utcnow()
@@ -571,7 +529,6 @@ def add_weight_log(telegram_id, weight_kg):
             )
         conn.commit()
 
-
 def get_weight_history(telegram_id, days=14):
     cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
     with get_conn() as conn:
@@ -584,9 +541,7 @@ def get_weight_history(telegram_id, days=14):
             )
             return cur.fetchall()
 
-
 # ── Global stats ────────────────────────────────────────────────────────────
-
 
 def get_total_stats():
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
@@ -682,9 +637,7 @@ def get_total_stats():
                 "new_today": new_today,
             }
 
-
 # ── Referrals ──────────────────────────────────────────────────────────────
-
 
 def register_referral(referrer_id, referee_id):
     with get_conn() as conn:
@@ -695,7 +648,6 @@ def register_referral(referrer_id, referee_id):
                 (referrer_id, referee_id),
             )
         conn.commit()
-
 
 def mark_referral_paid(referee_id):
     with get_conn() as conn:
@@ -714,7 +666,6 @@ def mark_referral_paid(referee_id):
             )
         conn.commit()
         return referrer_id
-
 
 def get_referral_stats(telegram_id):
     with get_conn() as conn:
