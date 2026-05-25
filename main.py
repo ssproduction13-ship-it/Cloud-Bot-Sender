@@ -1344,16 +1344,13 @@ async def main():
     async def cb_goal_type(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
-        state = user_states.get(uid, {})
         goal_type = callback.data.split("_")[1]
-        state.setdefault("data", {})["goal_type"] = goal_type
 
         labels = {"lose": "📉 Похудеть", "gain": "📈 Набрать массу",
                   "maintain": "⚖️ Поддерживать", "track": "📊 Просто считать"}
         label = labels.get(goal_type, goal_type)
 
         if goal_type == "track":
-            # Skip detailed calculation — mark onboarded and go straight to menu
             mark_onboarded(uid)
             user_states.pop(uid, None)
             is_admin = uid == ADMIN_ID
@@ -1367,11 +1364,14 @@ async def main():
                 reply_markup=main_keyboard(is_admin))
             return
 
-        # Ask for weight
-        user_states[uid] = {"state": STATES["ONBOARD_WEIGHT"], "data": {"goal_type": goal_type}}
+        # Ask for weight — set _from_onboard=True from the very start
+        user_states[uid] = {
+            "state": STATES["ONBOARD_WEIGHT"],
+            "data": {"goal_type": goal_type, "_from_onboard": True},
+        }
         await callback.message.edit_text(
             f"*{label}* — отличный выбор! 💪\n\n"
-            f"Введи свой текущий вес в кг:\n_(например: 75 или 75.5)_",
+            f"Шаг 1/4 — введи свой текущий вес в кг:\n_(например: 75 или 75.5)_",
             parse_mode="Markdown",
         )
 
@@ -1443,11 +1443,16 @@ async def main():
     async def cb_activity(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+        state_obj = user_states.get(uid, {})
+        d = state_obj.get("data", {})
+
+        # Determine context BEFORE clearing state
+        is_onboarding = d.get("_from_onboard") is True
+        user_states.pop(uid, None)
+        is_admin = uid == ADMIN_ID
+
         try:
-            state_obj = user_states.get(uid, {})
             activity  = float(callback.data.split("_")[1])
-            d = state_obj.get("data", {})
-            d["activity"] = activity
 
             gender    = d.get("gender", "m")
             age       = int(d.get("age", 25))
@@ -1455,8 +1460,8 @@ async def main():
             height    = float(d.get("height", 170.0))
             goal_type = d.get("goal_type", "track")
 
-            # Read user's stored goal_type as fallback if not in state data
-            if goal_type == "track":
+            # Fallback: read goal_type from DB if missing from state
+            if not goal_type or goal_type == "track":
                 stored = get_user(uid)
                 if stored and stored.get("goal_type") and stored["goal_type"] != "track":
                     goal_type = stored["goal_type"]
@@ -1473,16 +1478,13 @@ async def main():
                 gender=gender,
             )
 
-            is_onboarding = (
-                d.get("_from_onboard") is not False
-                and (d.get("_from_onboard") or state_obj.get("state") == STATES["ONBOARD_WAIT_ACTIVITY"])
-            )
-            user_states.pop(uid, None)
-            is_admin = uid == ADMIN_ID
+            # Mark onboarded immediately after saving — before any Telegram API calls
+            # so even if the message delivery fails, the user won't loop in onboarding
+            if is_onboarding:
+                mark_onboarded(uid)
 
             result_text = (
-                f"🔥 *Готово!*\n\n"
-                f"Твоя цель:\n"
+                f"🔥 *Готово! Норма рассчитана*\n\n"
                 f"🎯 *{tdee} ккал* в день\n"
                 f"💪 *{protein} г белка*\n\n"
                 f"Теперь просто отправляй фото еды 📸"
@@ -1492,10 +1494,6 @@ async def main():
                 f"💪 Белок: *{protein} г*"
             )
 
-            if is_onboarding:
-                mark_onboarded(uid)
-
-            # Try to edit the message; fall back to new message if it fails
             try:
                 await callback.message.edit_text(result_text, parse_mode="Markdown")
             except Exception:
@@ -1505,11 +1503,24 @@ async def main():
 
         except Exception as e:
             log.error(f"cb_activity error uid={uid}: {e}", exc_info=True)
-            user_states.pop(uid, None)
+            # Still mark onboarded so user doesn't loop forever — they can set goal manually
+            if is_onboarding:
+                try:
+                    mark_onboarded(uid)
+                except Exception:
+                    pass
             try:
-                await callback.message.edit_text("⚠️ Ошибка расчёта. Попробуй ещё раз — нажми /start")
+                await callback.message.edit_text(
+                    "⚠️ Не удалось рассчитать норму. Попробуй снова через ⚙️ Профиль → Изменить цель",
+                    parse_mode="Markdown",
+                )
             except Exception:
-                await callback.message.answer("⚠️ Ошибка расчёта. Попробуй ещё раз — нажми /start")
+                await callback.message.answer(
+                    "⚠️ Не удалось рассчитать норму. Попробуй снова через ⚙️ Профиль → Изменить цель",
+                    parse_mode="Markdown",
+                )
+            if is_onboarding:
+                await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
 
     # ── Profile inline callbacks ───────────────────────────────────────────────
     @dp.callback_query(F.data == "profile_goal")
@@ -2176,13 +2187,13 @@ async def main():
                 if not (20 <= weight <= 400):
                     raise ValueError
             except ValueError:
-                await message.answer("⚠️ Введи корректный вес от 20 до 400 кг:")
+                await message.answer("⚠️ Введи корректный вес от 20 до 400 кг (например: 75):")
                 return
             state_data["data"]["weight"] = weight
             state_data["state"] = STATES["ONBOARD_HEIGHT"]
             user_states[uid] = state_data
             await message.answer(
-                f"Вес *{weight} кг* — записал ✅\n\nТеперь рост в см:\n_(например: 175)_",
+                f"Вес *{weight} кг* — записал ✅\n\nШаг 2/4 — рост в см:\n_(например: 175)_",
                 parse_mode="Markdown",
             )
             return
@@ -2194,13 +2205,13 @@ async def main():
                 if not (100 <= height <= 250):
                     raise ValueError
             except ValueError:
-                await message.answer("⚠️ Введи корректный рост от 100 до 250 см:")
+                await message.answer("⚠️ Введи корректный рост от 100 до 250 см (например: 175):")
                 return
             state_data["data"]["height"] = height
             state_data["state"] = STATES["ONBOARD_AGE"]
             user_states[uid] = state_data
             await message.answer(
-                f"Рост *{int(height)} см* — отлично ✅\n\nСколько тебе лет?",
+                f"Рост *{int(height)} см* — отлично ✅\n\nШаг 3/4 — сколько тебе лет?",
                 parse_mode="Markdown",
             )
             return
@@ -2215,11 +2226,12 @@ async def main():
                 await message.answer("⚠️ Введи возраст от 10 до 100:")
                 return
             state_data["data"]["age"] = age
+            # _from_onboard was set to True in cb_goal_type; keep it, just ensure it's here
             state_data["data"]["_from_onboard"] = True
-            state_data["state"] = "onboard_wait_gender"
+            state_data["state"] = STATES["ONBOARD_WAIT_GENDER"]
             user_states[uid] = state_data
             await message.answer(
-                f"*{age} лет* — отлично! ✅\n\nПол (для точного расчёта нормы):",
+                f"*{age} лет* — отлично! ✅\n\nШаг 4/4 — укажи пол для точного расчёта:",
                 parse_mode="Markdown",
                 reply_markup=gender_keyboard(),
             )
