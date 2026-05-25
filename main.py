@@ -576,7 +576,6 @@ def progress_inline_keyboard() -> InlineKeyboardMarkup:
     """Small inline keyboard shown below the progress message."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📋 Дневник", callback_data="diary"),
-        InlineKeyboardButton(text="📅 7 дней", callback_data="history7"),
     ]])
 
 
