@@ -888,13 +888,16 @@ async def main():
             elif user["status"] == "paid":
                 if not user["expires_at"] or datetime.fromisoformat(user["expires_at"]) < datetime.utcnow():
                     activate_subscription(uid, 3650)
+        elif is_new_user:
+            # Auto-approve all new users with 7-day trial — no waiting required
+            approve_user(uid, trial_days=7)
 
         user = get_user(uid)
         if not user or user["status"] == "blocked":
             await message.answer("⛔ Доступ заблокирован.")
             return
 
-        # Notify admin about new users
+        # Notify admin about new users (info only — access already granted)
         if is_new_user and uid != ADMIN_ID:
             safe_name = (name or "").replace("_", "\\_").replace("*", "\\*")
             safe_un   = (un or "").replace("_", "\\_")
@@ -905,9 +908,12 @@ async def main():
                     ADMIN_ID,
                     f"🆕 *Новый пользователь*\n\n"
                     f"👤 *{safe_name}* ({un_str})\n"
-                    f"🆔 `{uid}`{ref_info}",
+                    f"🆔 `{uid}`{ref_info}\n\n"
+                    f"✅ Доступ открыт автоматически на 7 дней",
                     parse_mode="Markdown",
-                    reply_markup=new_user_keyboard(uid),
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{uid}"),
+                    ]]),
                 )
             except Exception as e:
                 log.warning(f"admin notify: {e}")
@@ -917,15 +923,7 @@ async def main():
 
         # Trigger onboarding for new/non-onboarded users
         if is_new_user or not user.get("onboarded"):
-            if status not in ("pending", "blocked"):
-                await start_onboarding(bot, uid, name)
-                return
-
-        if status == "pending":
-            await message.answer(
-                "⏳ Заявка на рассмотрении.\n\nАдмин скоро одобрит доступ!",
-                reply_markup=main_keyboard(is_admin),
-            )
+            await start_onboarding(bot, uid, name)
             return
 
         await message.answer(
