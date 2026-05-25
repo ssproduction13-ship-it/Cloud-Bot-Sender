@@ -1485,16 +1485,20 @@ async def main():
     async def cb_gender(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+
+        # Restore persisted onboarding state if the bot was restarted
+        _try_restore_onboard(uid)
+
         state_obj = user_states.get(uid, {})
         gender = "m" if callback.data == "gender_m" else "f"
 
         cur_state = state_obj.get("state", "")
-        cur_data   = state_obj.get("data", {})
+        cur_data  = state_obj.get("data", {})
         cur_data["gender"] = gender
 
         # Onboarding flow: after age we wait for gender → then activity
         if cur_state == STATES["ONBOARD_WAIT_GENDER"]:
-            cur_data["_from_onboard"] = True          # ensure flag is present
+            cur_data["_from_onboard"] = True
             _set_onboard_state(uid, STATES["ONBOARD_WAIT_ACTIVITY"], cur_data)
             await callback.message.edit_text(
                 f"{'♂️' if gender == 'm' else '♀️'} Записал!\n\nУровень активности:",
@@ -1503,7 +1507,7 @@ async def main():
             )
             return
 
-        # Regular goal-calc flow
+        # Regular goal-calc flow (from profile → Рассчитай мне)
         user_states[uid] = {
             "state": STATES["CALC_WEIGHT"],
             "data":  cur_data,
@@ -1518,29 +1522,88 @@ async def main():
     async def cb_activity(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+        is_admin = uid == ADMIN_ID
+
+        # ── 1. Restore state from DB if bot was restarted ──────────────────────
+        _try_restore_onboard(uid)
         state_obj = user_states.get(uid, {})
         d = state_obj.get("data", {})
 
-        # Determine context BEFORE clearing state
+        # ── 2. Determine context before clearing state ─────────────────────────
         is_onboarding = d.get("_from_onboard") is True
         user_states.pop(uid, None)
-        is_admin = uid == ADMIN_ID
 
+        # ── 3. Parse activity multiplier ───────────────────────────────────────
         try:
-            activity  = float(callback.data.split("_")[1])
+            activity = float(callback.data.split("_")[1])
+        except (IndexError, ValueError) as e:
+            log.error(f"cb_activity: bad callback_data={callback.data!r} uid={uid}: {e}")
+            await callback.message.answer(
+                "⚠️ Ошибка кнопки. Попробуй нажать ещё раз.",
+                parse_mode="Markdown",
+            )
+            return
 
-            gender    = d.get("gender", "m")
-            age       = int(d.get("age", 25))
-            weight    = float(d.get("weight", 70.0))
-            height    = float(d.get("height", 170.0))
-            goal_type = d.get("goal_type", "track")
+        # ── 4. Collect params: state → DB fallback ─────────────────────────────
+        db_user = get_user(uid)
 
-            # Fallback: read goal_type from DB if missing from state
-            if not goal_type or goal_type == "track":
-                stored = get_user(uid)
-                if stored and stored.get("goal_type") and stored["goal_type"] != "track":
-                    goal_type = stored["goal_type"]
+        raw_gender    = d.get("gender") or (db_user and db_user.get("gender"))
+        raw_weight    = d.get("weight") or (db_user and db_user.get("weight_kg"))
+        raw_height    = d.get("height") or (db_user and db_user.get("height_cm"))
+        raw_age       = d.get("age")    or (db_user and db_user.get("age"))
+        raw_goal_type = d.get("goal_type") or (db_user and db_user.get("goal_type"))
 
+        gender    = raw_gender    if raw_gender    in ("m", "f") else "m"
+        goal_type = raw_goal_type if raw_goal_type in ("lose", "gain", "maintain", "track") else "track"
+
+        # ── 5. Validate required numeric params ────────────────────────────────
+        try:
+            weight = float(raw_weight)
+            height = float(raw_height)
+            age    = int(raw_age)
+            if not (20 <= weight <= 400) or not (100 <= height <= 250) or not (10 <= age <= 100):
+                raise ValueError(f"out of range: w={weight} h={height} a={age}")
+        except (TypeError, ValueError) as e:
+            log.error(f"cb_activity: missing/invalid params uid={uid} "
+                      f"w={raw_weight} h={raw_height} a={raw_age}: {e}")
+            # If this is onboarding — mark as onboarded anyway so user isn't stuck,
+            # but ask them to set their goal manually from the profile.
+            if is_onboarding:
+                try:
+                    mark_onboarded(uid)
+                except Exception:
+                    pass
+                try:
+                    clear_onboard_state(uid)
+                except Exception:
+                    pass
+                try:
+                    await callback.message.edit_text(
+                        "⚠️ Не удалось получить твои данные (вес / рост / возраст).\n\n"
+                        "Заходи в ⚙️ *Профиль* → *Изменить цель* — там рассчитаем норму заново 🎯",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    await callback.message.answer(
+                        "⚠️ Не удалось получить твои данные. Зайди в ⚙️ Профиль → Изменить цель.",
+                        parse_mode="Markdown",
+                    )
+                await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+            else:
+                try:
+                    await callback.message.edit_text(
+                        "⚠️ Данные не найдены. Введи параметры заново через ⚙️ *Профиль* → *Изменить цель*.",
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    await callback.message.answer(
+                        "⚠️ Данные не найдены. Введи параметры через ⚙️ Профиль → Изменить цель.",
+                        parse_mode="Markdown",
+                    )
+            return
+
+        # ── 6. Calculate and save ──────────────────────────────────────────────
+        try:
             tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
 
             set_daily_goal(
@@ -1553,8 +1616,6 @@ async def main():
                 gender=gender,
             )
 
-            # Mark onboarded immediately after saving — before any Telegram API calls
-            # so even if the message delivery fails, the user won't loop in onboarding
             if is_onboarding:
                 mark_onboarded(uid)
                 try:
@@ -1562,15 +1623,25 @@ async def main():
                 except Exception:
                     pass
 
+            goal_labels = {
+                "lose":     "📉 Похудение",
+                "gain":     "📈 Набор массы",
+                "maintain": "⚖️ Поддержание",
+                "track":    "📊 Отслеживание",
+            }
+            goal_label = goal_labels.get(goal_type, "")
+
             result_text = (
                 f"🔥 *Готово! Норма рассчитана*\n\n"
                 f"🎯 *{tdee} ккал* в день\n"
-                f"💪 *{protein} г белка*\n\n"
+                f"💪 *{protein} г белка*\n"
+                f"🏷 Цель: {goal_label}\n\n"
                 f"Теперь просто отправляй фото еды 📸"
             ) if is_onboarding else (
                 f"✅ *Норма обновлена!*\n\n"
                 f"🎯 *{tdee} ккал* в день\n"
-                f"💪 Белок: *{protein} г*"
+                f"💪 Белок: *{protein} г*\n"
+                f"🏷 Цель: {goal_label}"
             )
 
             try:
@@ -1584,8 +1655,7 @@ async def main():
                 pass
 
         except Exception as e:
-            log.error(f"cb_activity error uid={uid}: {e!r}", exc_info=True)
-            # Still mark onboarded so user doesn't loop forever — they can set goal manually
+            log.error(f"cb_activity: save/send error uid={uid}: {e!r}", exc_info=True)
             if is_onboarding:
                 try:
                     mark_onboarded(uid)
@@ -1597,16 +1667,19 @@ async def main():
                     pass
             try:
                 await callback.message.edit_text(
-                    "⚠️ Не удалось рассчитать норму. Попробуй снова через ⚙️ Профиль → Изменить цель",
+                    "⚠️ Не удалось сохранить норму. Попробуй снова через ⚙️ Профиль → Изменить цель",
                     parse_mode="Markdown",
                 )
             except Exception:
                 await callback.message.answer(
-                    "⚠️ Не удалось рассчитать норму. Попробуй снова через ⚙️ Профиль → Изменить цель",
+                    "⚠️ Не удалось сохранить норму. Попробуй через ⚙️ Профиль → Изменить цель",
                     parse_mode="Markdown",
                 )
             if is_onboarding:
-                await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+                try:
+                    await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+                except Exception:
+                    pass
 
     # ── Profile inline callbacks ───────────────────────────────────────────────
     @dp.callback_query(F.data == "profile_goal")
