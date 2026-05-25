@@ -1046,13 +1046,19 @@ async def main():
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
         lines = [f"*{'Все' if not sf else sf.upper()} ({len(users)}):*\n"]
         for u in users[:30]:
-            nm = (u["first_name"] or "").replace("_", " ")[:15]
-            un = u["username"] or ""
+            nm = (u["first_name"] or "").replace("_", "\\_").replace("*", "\\*")[:15]
+            un = (u["username"] or "").replace("_", "\\_")
             label = f"{nm} (@{un})" if un else f"{nm} (id{u['telegram_id']})"
             streak = u.get("streak_days", 0)
             s_icon = f" 🔥{streak}" if streak > 1 else ""
             lines.append(f"{icons.get(u['status'],'❓')} {label} — `{u['telegram_id']}`{s_icon}")
-        await message.answer("\n".join(lines), parse_mode="Markdown")
+        try:
+            await message.answer("\n".join(lines), parse_mode="Markdown")
+        except Exception:
+            plain = [lines[0].replace("*", "")] + [
+                l.replace("*", "").replace("`", "").replace("\\_", "_") for l in lines[1:]
+            ]
+            await message.answer("\n".join(plain))
 
     @dp.message(Command("stats"))
     async def cmd_stats(message: Message):
@@ -1175,11 +1181,19 @@ async def main():
         label = status_filter.upper() if status_filter else "ВСЕ"
         lines = [f"*{label} ({min(len(users),25)}):*\n"]
         for u in users[:25]:
-            nm = (u["first_name"] or "").replace("_", " ")[:15]
-            un = u["username"] or ""
+            nm = (u["first_name"] or "").replace("_", "\\_").replace("*", "\\*")[:15]
+            un = (u["username"] or "").replace("_", "\\_")
             lbl = f"{nm} (@{un})" if un else f"{nm} (id{u['telegram_id']})"
-            lines.append(f"{icons.get(u['status'],'❓')} {lbl} — `{u['telegram_id']}`")
-        await callback.message.answer("\n".join(lines), parse_mode="Markdown")
+            streak = u.get("streak_days", 0)
+            s_icon = f" 🔥{streak}" if streak > 1 else ""
+            lines.append(f"{icons.get(u['status'],'❓')} {lbl} — `{u['telegram_id']}`{s_icon}")
+        try:
+            await callback.message.answer("\n".join(lines), parse_mode="Markdown")
+        except Exception:
+            plain = [lines[0].replace("*", "")] + [
+                l.replace("*", "").replace("`", "").replace("\\_", "_") for l in lines[1:]
+            ]
+            await callback.message.answer("\n".join(plain))
 
     @dp.callback_query(F.data.startswith("approve_"))
     async def cb_approve(callback: CallbackQuery):
