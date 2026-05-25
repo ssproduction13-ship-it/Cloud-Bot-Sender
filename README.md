@@ -1,4 +1,4 @@
-# ArdashevFood Bot
+# NutriAI Bot
 
 Telegram бот для подсчёта калорий по фото еды.
 
