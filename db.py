@@ -107,6 +107,7 @@ def init_db():
                 ("height_cm",        "REAL"),
                 ("age",              "INTEGER"),
                 ("goal_type",        "TEXT DEFAULT 'track'"),
+                ("activity",        "TEXT DEFAULT 'moderate'"),
                 ("gender",           "TEXT"),
                 ("onboarded",        "INTEGER DEFAULT 0"),
             ]
@@ -219,17 +220,17 @@ def mark_onboarded(telegram_id):
         conn.commit()
 
 def set_user_goals(telegram_id, *, daily_goal, protein_goal, weight_kg,
-                   height_cm, age, gender, goal_type):
+                   height_cm, age, gender, goal_type, activity="moderate"):
     """Save calculated onboarding goals to the users table."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE users
                    SET daily_goal=%s, protein_goal=%s, weight_kg=%s,
-                       height_cm=%s, age=%s, gender=%s, goal_type=%s
+                       height_cm=%s, age=%s, gender=%s, goal_type=%s, activity=%s
                    WHERE telegram_id=%s""",
                 (daily_goal, protein_goal, weight_kg,
-                 height_cm, age, gender, goal_type, telegram_id),
+                 height_cm, age, gender, goal_type, activity, telegram_id),
             )
         conn.commit()
 
