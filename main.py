@@ -77,11 +77,11 @@ SUB_PRICE_STARS       = 150
 SUB_DAYS              = 30
 REFERRAL_BONUS_DAYS   = 7
 REFERRAL_JOIN_BONUS_DAYS = 3
-  SUB_PRICE_3M          = 360   # 3 months (−20%)
-  SUB_PRICE_12M         = 990   # 12 months (−45%)
-  SUB_DAYS_3M           = 90
-  SUB_DAYS_12M          = 365
-  WATER_GOAL            = 8     # glasses per day
+SUB_PRICE_3M          = 360   # 3 months (−20%)
+SUB_PRICE_12M         = 990   # 12 months (−45%)
+SUB_DAYS_3M           = 90
+SUB_DAYS_12M          = 365
+WATER_GOAL            = 8     # glasses per day
 
 STREAK_MILESTONES = {
     3:  "🥉 3 дня подряд",
