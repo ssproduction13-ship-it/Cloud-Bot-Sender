@@ -32,7 +32,6 @@ from db import (
     set_status,
     approve_user,
     is_trial_expired,
-    set_daily_goal,
     mark_onboarded,
     save_onboard_state,
     load_onboard_state,
@@ -99,16 +98,9 @@ openai_client = AsyncOpenAI(
 user_states: dict[int, dict] = {}
 
 STATES = {
-    "GOAL_ENTER":             "goal_enter",
     "MANUAL_ENTRY":           "manual_entry",
     "CORRECT_ENTRY":          "correct_entry",
     "WEIGHT_LOG":             "weight_log",
-    # Onboarding
-    "ONBOARD_GOAL_TYPE":      "onboard_goal_type",
-    # Unified TDEE calc — both onboarding and profile
-    "CALC_PARAMS":            "calc_params",
-    # Goal-ask flow
-    "GOAL_ASK":               "goal_ask",
     # Admin
     "ADMIN_GIVE_DAYS":        "admin_give_days",
     "ADMIN_BROADCAST":        "admin_broadcast",
@@ -117,10 +109,7 @@ STATES = {
 # State TTL: auto-expire stale FSM states after 1 hour of inactivity
 _STATE_TTL_SECONDS = 3600
 
-# Onboarding states that need to survive bot restarts
-ONBOARD_STATES = {
-    STATES["CALC_PARAMS"],
-}
+ONBOARD_STATES: set = set()
 
 
 def _get_state(uid: int) -> dict:
@@ -559,10 +548,8 @@ def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
     ]])
 
 
-def profile_keyboard(uid: int, has_goal: bool) -> InlineKeyboardMarkup:
-    goal_btn_text = "✏️ Изменить цель" if has_goal else "🎯 Установить цель"
+def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=goal_btn_text, callback_data="profile_goal")],
         [InlineKeyboardButton(text="⚖️ Записать вес", callback_data="weight_opt")],
         [InlineKeyboardButton(text="📈 Неделя", callback_data="profile_week")],
         [InlineKeyboardButton(text="ℹ️ Статус подписки", callback_data="profile_status")],
@@ -576,62 +563,6 @@ def premium_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def goal_ask_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔢 Введу сам",      callback_data="goal_know")],
-        [InlineKeyboardButton(text="🧮 Рассчитай мне",  callback_data="goal_calc")],
-        [InlineKeyboardButton(text="⏭ Пропустить",     callback_data="goal_skip")],
-    ])
-
-
-def gender_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="♂️ Мужчина", callback_data="gender_m"),
-        InlineKeyboardButton(text="♀️ Женщина", callback_data="gender_f"),
-    ]])
-
-
-def activity_keyboard(
-    weight: float = 0,
-    height: float = 0,
-    age: int = 0,
-    gender: str = "m",
-    goal_type: str = "track",
-    from_onboard: bool = False,
-) -> InlineKeyboardMarkup:
-    """
-    Embed all user params inside every button's callback_data so the handler
-    never needs to read from in-memory state (survives bot restarts).
-
-    Format: act_{multiplier}|{w}|{h}|{a}|{g}|{gt}|{o}
-    Max length example: act_1.375|100|250|100|m|maintain|1  → 34 chars (well under 64-byte limit)
-    """
-    w  = int(round(weight))
-    h  = int(round(height))
-    a  = int(age)
-    g  = gender if gender in ("m", "f") else "m"
-    gt = goal_type if goal_type in ("lose", "gain", "maintain", "track") else "track"
-    o  = "1" if from_onboard else "0"
-
-    def cb(mult: str) -> str:
-        return f"act_{mult}|{w}|{h}|{a}|{g}|{gt}|{o}"
-
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛋 Сидячий образ жизни",           callback_data=cb("1.20"))],
-        [InlineKeyboardButton(text="🚶 Лёгкая активность (1-3 дня)",   callback_data=cb("1.375"))],
-        [InlineKeyboardButton(text="🏃 Средняя активность (3-5 дней)",  callback_data=cb("1.55"))],
-        [InlineKeyboardButton(text="🏋 Высокая активность (6-7 дней)",  callback_data=cb("1.725"))],
-        [InlineKeyboardButton(text="⚡ Очень высокая / спортсмен",     callback_data=cb("1.90"))],
-    ])
-
-
-def goal_type_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📉 Похудеть",       callback_data="gtype_lose")],
-        [InlineKeyboardButton(text="📈 Набрать массу",  callback_data="gtype_gain")],
-        [InlineKeyboardButton(text="⚖️ Поддерживать",   callback_data="gtype_maintain")],
-        [InlineKeyboardButton(text="📊 Просто считать", callback_data="gtype_track")],
-    ])
 
 
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
@@ -667,59 +598,27 @@ def user_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# ── TDEE calc ─────────────────────────────────────────────────────────────────
-
-
-def calc_tdee(gender: str, age: int, weight: float, height: float,
-              activity: float, goal_type: str = "track") -> tuple[int, int]:
-    bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "m" else -161)
-    tdee = round(bmr * activity)
-    if goal_type == "lose":
-        tdee = round(tdee * 0.85)
-    elif goal_type == "gain":
-        tdee = round(tdee * 1.10)
-    protein = round(weight * 1.8 if goal_type == "gain" else weight * 1.6)
-    return tdee, protein
 
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
 
 
 async def start_onboarding(bot: Bot, uid: int, name: str):
-    # Check if the user has unfinished onboarding progress persisted in DB
+    mark_onboarded(uid)
     try:
-        persisted = load_onboard_state(uid)
+        clear_onboard_state(uid)
     except Exception:
-        persisted = None
-
-    if persisted and persisted.get("state") == STATES["CALC_PARAMS"]:
-        # Restore CALC_PARAMS state and re-prompt for body params
-        d = persisted.get("data", {})
-        user_states[uid] = {"state": STATES["CALC_PARAMS"], "data": d, "_ts": datetime.utcnow()}
-        labels = {"lose": "📉 Похудеть", "gain": "📈 Набрать массу", "maintain": "⚖️ Поддерживать"}
-        goal_label = labels.get(d.get("goal_type", ""), "")
-        goal_line = f"Цель: *{goal_label}*\n\n" if goal_label else ""
-        await bot.send_message(
-            uid,
-            f"Продолжаем! {goal_line}"
-            f"Введи вес, рост, возраст и пол одним сообщением:\n\n"
-            f"`вес рост возраст пол`\n\n"
-            f"Пример: `75 175 28 м` или `60 165 25 ж`",
-            parse_mode="Markdown",
-        )
-        return
-
-    # Fresh onboarding start
-    _set_state(uid, STATES["ONBOARD_GOAL_TYPE"])
+        pass
+    user_states.pop(uid, None)
+    is_admin = uid == ADMIN_ID
     await bot.send_message(
         uid,
         f"Привет, {name}! 👋\n\n"
         f"Я помогу *считать калории по фото еды* и следить за питанием.\n\n"
-        f"Буквально 30 секунд — и твой личный трекер готов 🚀\n\n"
-        f"*Какая у тебя цель?*",
+        f"Просто отправляй фото еды — я посчитаю калории 📸",
         parse_mode="Markdown",
-        reply_markup=goal_type_keyboard(),
     )
+    await bot.send_message(uid, "Главное меню 👇", reply_markup=main_keyboard(is_admin))
 
 
 # ── Общий хелпер доставки результата анализа еды ─────────────────────────────
@@ -1414,249 +1313,7 @@ async def main():
         except Exception:
             pass
 
-    # ── Onboarding callbacks ───────────────────────────────────────────────────
-    @dp.callback_query(F.data.startswith("gtype_"))
-    async def cb_goal_type(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-        goal_type = callback.data.split("_")[1]
-
-        labels = {"lose": "📉 Похудеть", "gain": "📈 Набрать массу",
-                  "maintain": "⚖️ Поддерживать", "track": "📊 Просто считать"}
-        label = labels.get(goal_type, goal_type)
-
-        if goal_type == "track":
-            mark_onboarded(uid)
-            user_states.pop(uid, None)
-            is_admin = uid == ADMIN_ID
-            await callback.message.edit_text(
-                f"✅ *{label}* — запомнил!\n\n"
-                f"Отправляй фото еды — начнём считать 📸",
-                parse_mode="Markdown",
-            )
-            await bot.send_message(uid,
-                "Главное меню готово 👇",
-                reply_markup=main_keyboard(is_admin))
-            return
-
-        # Save goal_type + is_onboard flag in CALC_PARAMS state (persisted to DB)
-        _set_onboard_state(uid, STATES["CALC_PARAMS"],
-                           {"goal_type": goal_type, "is_onboard": True})
-        await callback.message.edit_text(
-            f"*{label}* — отличный выбор! 💪\n\n"
-            f"Введи вес, рост, возраст и пол одним сообщением:\n\n"
-            f"`вес рост возраст пол`\n\n"
-            f"Пример: `75 175 28 м` — мужчина\n"
-            f"`60 165 25 ж` — женщина\n\n"
-            f"_/cancel — отмена_",
-            parse_mode="Markdown",
-        )
-
-    # ── Goal setup callbacks ───────────────────────────────────────────────────
-    @dp.callback_query(F.data.in_({"goal_know", "goal_calc", "goal_skip"}))
-    async def cb_goal_ask(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-        data = callback.data
-
-        if data == "goal_skip":
-            user_states.pop(uid, None)
-            await callback.message.edit_text("Ок, норму можно задать позже — кнопка ⚙️ Профиль.")
-            return
-
-        if data == "goal_know":
-            user_states[uid] = {"state": STATES["GOAL_ENTER"], "data": {}}
-            await callback.message.edit_text(
-                "Введи свою дневную норму в ккал (например: 2000):"
-            )
-            return
-
-        # goal_calc → ask for all body params in one message
-        goal_type = (user.get("goal_type") if user else None) or "track"
-        _set_onboard_state(uid, STATES["CALC_PARAMS"],
-                           {"goal_type": goal_type, "is_onboard": False})
-        await callback.message.edit_text(
-            "🧮 *Рассчитаю норму по формуле Mifflin-St Jeor*\n\n"
-            "Введи вес, рост, возраст и пол одним сообщением:\n\n"
-            "`вес рост возраст пол`\n\n"
-            "Пример: `75 175 28 м` — мужчина\n"
-            "`60 165 25 ж` — женщина\n\n"
-            "_/cancel — отмена_",
-            parse_mode="Markdown",
-        )
-
-    @dp.callback_query(F.data.startswith("act_"))
-    async def cb_activity(callback: CallbackQuery):
-        """
-        Decode ALL user params directly from callback_data — zero state dependency.
-
-        New format (produced by activity_keyboard()):
-            act_{mult}|{weight}|{height}|{age}|{gender}|{goal_type}|{onboard}
-            e.g. act_1.375|75|175|28|m|lose|1
-
-        Legacy format (old buttons still floating in chats):
-            act_{mult}   e.g. act_1.375
-        """
-        uid = callback.from_user.id
-        await callback.answer()
-        is_admin = uid == ADMIN_ID
-        user_states.pop(uid, None)
-
-        raw = callback.data  # e.g. "act_1.375|75|175|28|m|lose|1"
-
-        # ── Parse callback_data ────────────────────────────────────────────────
-        if "|" in raw:
-            # New self-contained format — everything we need is right here
-            try:
-                head, w_s, h_s, a_s, gender, goal_type, o_s = raw.split("|")
-                activity    = float(head.split("_")[1])
-                weight      = float(w_s)
-                height      = float(h_s)
-                age         = int(a_s)
-                is_onboarding = (o_s == "1")
-                if gender not in ("m", "f"):
-                    gender = "m"
-                if goal_type not in ("lose", "gain", "maintain", "track"):
-                    goal_type = "track"
-            except Exception as e:
-                log.error(f"cb_activity: bad new-format data={raw!r} uid={uid}: {e}")
-                await callback.message.answer(
-                    "⚠️ Ошибка данных кнопки. Пройди расчёт заново через ⚙️ Профиль → Изменить цель."
-                )
-                return
-        else:
-            # Legacy format: only the multiplier is in the button — fall back to DB
-            log.warning(f"cb_activity: legacy button uid={uid} data={raw!r}")
-            try:
-                activity = float(raw.split("_")[1])
-            except Exception:
-                await callback.message.answer("⚠️ Устаревшая кнопка. Нажми ⚙️ Профиль → Изменить цель.")
-                return
-
-            db_user   = get_user(uid)
-            weight    = float(db_user.get("weight_kg") or 0) if db_user else 0
-            height    = float(db_user.get("height_cm") or 0) if db_user else 0
-            age       = int(db_user.get("age") or 0)        if db_user else 0
-            gender    = db_user.get("gender", "m")          if db_user else "m"
-            goal_type = db_user.get("goal_type", "track")   if db_user else "track"
-            is_onboarding = not bool(db_user.get("onboarded")) if db_user else False
-
-            if weight < 20 or height < 100 or age < 10:
-                if is_onboarding:
-                    try: mark_onboarded(uid)
-                    except Exception: pass
-                    try: clear_onboard_state(uid)
-                    except Exception: pass
-                    try:
-                        await callback.message.edit_text(
-                            "⚠️ Данные устарели. Пройди настройку заново — нажми /start"
-                        )
-                    except Exception:
-                        await callback.message.answer(
-                            "⚠️ Данные устарели. Пройди настройку заново — нажми /start"
-                        )
-                    await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
-                else:
-                    try:
-                        await callback.message.edit_text(
-                            "⚠️ Нет данных профиля. Введи заново: ⚙️ Профиль → Изменить цель"
-                        )
-                    except Exception:
-                        await callback.message.answer(
-                            "⚠️ Нет данных профиля. Введи заново: ⚙️ Профиль → Изменить цель"
-                        )
-                return
-
-        # ── Calculate & save ──────────────────────────────────────────────────
-        try:
-            tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
-
-            set_daily_goal(
-                uid, tdee,
-                protein_goal=protein,
-                goal_type=goal_type,
-                weight_kg=weight,
-                height_cm=height,
-                age=age,
-                gender=gender,
-            )
-
-            if is_onboarding:
-                mark_onboarded(uid)
-                try:
-                    clear_onboard_state(uid)
-                except Exception:
-                    pass
-
-            goal_labels = {
-                "lose":     "📉 Похудение",
-                "gain":     "📈 Набор массы",
-                "maintain": "⚖️ Поддержание",
-                "track":    "📊 Отслеживание",
-            }
-            goal_label = goal_labels.get(goal_type, "")
-
-            result_text = (
-                f"🔥 *Готово! Норма рассчитана*\n\n"
-                f"🎯 *{tdee} ккал* в день\n"
-                f"💪 *{protein} г белка*\n"
-                f"🏷 Цель: {goal_label}\n\n"
-                f"Теперь просто отправляй фото еды 📸"
-            ) if is_onboarding else (
-                f"✅ *Норма обновлена!*\n\n"
-                f"🎯 *{tdee} ккал* в день\n"
-                f"💪 Белок: *{protein} г*\n"
-                f"🏷 Цель: {goal_label}"
-            )
-
-            try:
-                await callback.message.edit_text(result_text, parse_mode="Markdown")
-            except Exception:
-                await callback.message.answer(result_text, parse_mode="Markdown")
-
-            try:
-                await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
-            except Exception:
-                pass
-
-        except Exception as e:
-            log.error(f"cb_activity: calc/save error uid={uid}: {e!r}", exc_info=True)
-            if is_onboarding:
-                try: mark_onboarded(uid)
-                except Exception: pass
-                try: clear_onboard_state(uid)
-                except Exception: pass
-            try:
-                await callback.message.edit_text(
-                    "⚠️ Не удалось сохранить норму. Попробуй через ⚙️ Профиль → Изменить цель",
-                    parse_mode="Markdown",
-                )
-            except Exception:
-                await callback.message.answer(
-                    "⚠️ Не удалось сохранить норму. Попробуй через ⚙️ Профиль → Изменить цель",
-                    parse_mode="Markdown",
-                )
-            if is_onboarding:
-                try:
-                    await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
-                except Exception:
-                    pass
-
     # ── Profile inline callbacks ───────────────────────────────────────────────
-    @dp.callback_query(F.data == "profile_goal")
-    async def cb_profile_goal(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-        user = get_user(uid)
-        current = user["daily_goal"] if user else None
-        prefix = f"Текущая норма: *{current} ккал*\n\n" if current else ""
-        user_states[uid] = {"state": "goal_ask", "data": {}}
-        await callback.message.answer(
-            f"{prefix}🎯 *Изменить норму калорий*\n\nВыбери способ:",
-            parse_mode="Markdown",
-            reply_markup=goal_ask_keyboard(),
-        )
-
     @dp.callback_query(F.data == "weight_opt")
     async def cb_weight_opt(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -2304,121 +1961,6 @@ async def main():
                 await asyncio.sleep(0.05)  # Telegram rate limit
             user_states.pop(uid, None)
             await message.answer(f"📡 Рассылка: ✅{sent} ❌{failed}")
-            return
-
-        # ── CALC_PARAMS: single-message input "75 175 28 м" ───────────────────────
-        if state == STATES["CALC_PARAMS"]:
-            parts = text.split()
-            error_prompt = (
-                "⚠️ Не могу разобрать. Введи 4 значения через пробел:\n\n"
-                "`вес рост возраст пол`\n\n"
-                "Пример: `75 175 28 м` или `60 165 25 ж`\n\n"
-                "_/cancel — отмена_"
-            )
-            if len(parts) < 3:
-                await message.answer(error_prompt, parse_mode="Markdown")
-                return
-            try:
-                weight = float(parts[0].replace(",", "."))
-                height = float(parts[1].replace(",", "."))
-                age    = int(parts[2])
-                if not (20 <= weight <= 400):
-                    raise ValueError("weight")
-                if not (100 <= height <= 250):
-                    raise ValueError("height")
-                if not (10 <= age <= 100):
-                    raise ValueError("age")
-            except (ValueError, IndexError):
-                await message.answer(error_prompt, parse_mode="Markdown")
-                return
-
-            # Parse gender (optional 4th token, defaults to 'm')
-            gender = "m"
-            if len(parts) >= 4:
-                g_raw = parts[3].lower().strip(".,")
-                if g_raw in ("ж", "ж.", "жен", "женщина", "женский", "f", "female", "w", "2"):
-                    gender = "f"
-                elif g_raw in ("м", "м.", "муж", "мужчина", "мужской", "m", "male", "1"):
-                    gender = "m"
-                else:
-                    await message.answer(
-                        f"⚠️ Не понял пол: *{parts[3]}*\n\n"
-                        f"Напиши `м` (мужчина) или `ж` (женщина) последним словом.\n\n"
-                        f"Пример: `{parts[0]} {parts[1]} {parts[2]} м`",
-                        parse_mode="Markdown",
-                    )
-                    return
-
-            d = state_data.get("data", {})
-            goal_type  = d.get("goal_type") or (user.get("goal_type") if user else "track") or "track"
-            is_onboard = bool(d.get("is_onboard", False))
-
-            # Fixed activity multiplier — moderate (1.55), no selection needed
-            activity = 1.55
-            tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
-
-            set_daily_goal(
-                uid, tdee,
-                protein_goal=protein,
-                goal_type=goal_type,
-                weight_kg=weight,
-                height_cm=height,
-                age=age,
-                gender=gender,
-            )
-            user_states.pop(uid, None)
-
-            if is_onboard:
-                mark_onboarded(uid)
-                try:
-                    clear_onboard_state(uid)
-                except Exception:
-                    pass
-
-            goal_labels = {
-                "lose":     "📉 Похудение",
-                "gain":     "📈 Набор массы",
-                "maintain": "⚖️ Поддержание",
-                "track":    "📊 Отслеживание",
-            }
-            goal_label = goal_labels.get(goal_type, "")
-            gender_icon = "♂️" if gender == "m" else "♀️"
-
-            result_text = (
-                f"🔥 *Готово! Норма рассчитана*\n\n"
-                f"{gender_icon} {weight} кг · {int(height)} см · {age} лет\n\n"
-                f"🎯 *{tdee} ккал* в день\n"
-                f"💪 *{protein} г белка*\n"
-                f"🏷 Цель: {goal_label}\n\n"
-                f"Теперь просто отправляй фото еды 📸"
-            ) if is_onboard else (
-                f"✅ *Норма обновлена!*\n\n"
-                f"{gender_icon} {weight} кг · {int(height)} см · {age} лет\n\n"
-                f"🎯 *{tdee} ккал* в день\n"
-                f"💪 Белок: *{protein} г*\n"
-                f"🏷 Цель: {goal_label}"
-            )
-
-            await message.answer(result_text, parse_mode="Markdown",
-                                 reply_markup=main_keyboard(uid == ADMIN_ID))
-            return
-
-        # ── Goal manual enter ──────────────────────────────────────────────────
-        if state == STATES["GOAL_ENTER"]:
-            try:
-                kcal = int(text)
-                if not (500 <= kcal <= 10000):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи число от 500 до 10000:")
-                return
-            set_daily_goal(uid, kcal)
-            user_states.pop(uid, None)
-            await message.answer(
-                f"✅ *Норма установлена: {kcal} ккал*",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
             return
 
         # ── Correct entry ──────────────────────────────────────────────────────
