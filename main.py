@@ -584,7 +584,7 @@ def progress_inline_keyboard() -> InlineKeyboardMarkup:
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Одобрить",      callback_data=f"approve_{uid}"),
+        InlineKeyboardButton(text="💎 +7 дней",       callback_data=f"give7_{uid}"),
         InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{uid}"),
     ]])
 
@@ -621,16 +621,16 @@ def premium_keyboard() -> InlineKeyboardMarkup:
 def admin_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 Статистика",   callback_data="adm_stats"),
-            InlineKeyboardButton(text="👥 Все юзеры",    callback_data="adm_users"),
+            InlineKeyboardButton(text="📊 Статистика",    callback_data="adm_stats"),
+            InlineKeyboardButton(text="🔄 Обновить",      callback_data="adm_refresh"),
         ],
         [
-            InlineKeyboardButton(text="⏳ Ожидают",      callback_data="adm_pending"),
-            InlineKeyboardButton(text="💎 Платные",      callback_data="adm_paid"),
+            InlineKeyboardButton(text="📋 Бета-юзеры",    callback_data="adm_beta"),
+            InlineKeyboardButton(text="💎 Платные",       callback_data="adm_paid"),
         ],
         [
-            InlineKeyboardButton(text="📡 Рассылка",     callback_data="adm_broadcast"),
-            InlineKeyboardButton(text="🔄 Обновить",     callback_data="adm_refresh"),
+            InlineKeyboardButton(text="👥 Все юзеры",     callback_data="adm_users"),
+            InlineKeyboardButton(text="📡 Рассылка",      callback_data="adm_broadcast"),
         ],
     ])
 
@@ -638,15 +638,12 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
 def user_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Одобрить",     callback_data=f"approve_{target_id}"),
-            InlineKeyboardButton(text="🚫 Блокировать",  callback_data=f"block_{target_id}"),
-        ],
-        [
             InlineKeyboardButton(text="💎 +7 дней",      callback_data=f"give7_{target_id}"),
             InlineKeyboardButton(text="💎 +30 дней",     callback_data=f"give30_{target_id}"),
         ],
         [
-            InlineKeyboardButton(text="⚡ Активировать", callback_data=f"activate_{target_id}"),
+            InlineKeyboardButton(text="⚡ +30 дней (старт)", callback_data=f"activate_{target_id}"),
+            InlineKeyboardButton(text="🚫 Блокировать",  callback_data=f"block_{target_id}"),
         ],
     ])
 
@@ -1143,8 +1140,11 @@ async def main():
             f"📈 D1 retention: *{s['d1_retention']}%*  |  D7: *{s['d7_retention']}%*\n"
             f"🔥 Средний стрик: *{s['avg_streak']} дн.*\n"
             f"🔗 Реф. оплат: *{s['referrals_paid']}*\n\n"
-            f"Команды: `/user ID` `/approve ID` `/activate ID`\n"
-            f"`/give ID [дней]` `/block ID` `/broadcast ТЕКСТ`"
+            f"📌 *Команды:*\n"
+            f"`/user ID` — карточка пользователя\n"
+            f"`/give ID 30` — добавить дни подписки\n"
+            f"`/block ID` — заблокировать\n"
+            f"`/stats` — статистика  `/users` — список"
         )
         await send_fn(text, parse_mode="Markdown", reply_markup=admin_panel_keyboard())
 
@@ -1182,8 +1182,8 @@ async def main():
         except ValueError:
             await message.answer("ID должен быть числом.")
             return
-        approve_user(target_id, trial_days=3)
-        await message.answer(f"✅ Пользователь {target_id} одобрен (3 дня).")
+        approve_user(target_id, trial_days=7)
+        await message.answer(f"✅ Пользователь {target_id} одобрен (7-дневный триал).")
         try:
             u = get_user(target_id)
             if u and not u.get("onboarded"):
@@ -1226,7 +1226,7 @@ async def main():
             return
         parts = message.text.split()
         if len(parts) < 2:
-            await message.answer("Использование: /give ID [дней]")
+            await message.answer("Использование: /give ID ДНЕЙ\nПример: /give 123456789 30")
             return
         try:
             target_id = int(parts[1])
@@ -1259,7 +1259,7 @@ async def main():
             await message.answer("ID должен быть числом.")
             return
         set_status(target_id, "blocked")
-        await message.answer(f"🚫 Пользователь {target_id} заблокирован.")
+        await message.answer(f"🚫 Пользователь {target_id} заблокирован.\n\nДля разблокировки: /give {target_id} 7")
 
     @dp.message(Command("users"))
     async def cmd_users(message: Message):
@@ -1269,7 +1269,7 @@ async def main():
         sf = parts[1] if len(parts) > 1 else None
         users = get_all_users(sf)
         if not users:
-            await message.answer("Нет пользователей.")
+            await message.answer("Нет пользователей.\n\nФильтры: /users beta | paid | blocked")
             return
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
         lines = [f"*{'Все' if not sf else sf.upper()} ({len(users)}):*\n"]
@@ -1397,7 +1397,7 @@ async def main():
         )
 
 
-    @dp.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_pending",
+    @dp.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_beta",
                                     "adm_paid", "adm_refresh", "adm_broadcast"}))
     async def cb_admin_panel(callback: CallbackQuery):
         if callback.from_user.id != ADMIN_ID:
@@ -1437,15 +1437,15 @@ async def main():
             )
             return
 
-        status_filter = "pending" if data == "adm_pending" else "paid"
+        status_filter = "beta" if data == "adm_beta" else "paid"
         if data == "adm_users":
             status_filter = None
         users = get_all_users(status_filter)
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
         if not users:
-            await callback.message.answer("Нет пользователей.")
+            await callback.message.answer("Нет пользователей в этой категории.")
             return
-        label = status_filter.upper() if status_filter else "ВСЕ"
+        label = {"adm_beta": "БЕТА", "adm_paid": "ПЛАТНЫЕ", "adm_users": "ВСЕ"}.get(data, "ВСЕ")
         lines = [f"*{label} ({min(len(users),25)}):*\n"]
         for u in users[:25]:
             nm = (u["first_name"] or "").replace("_", "\\_").replace("*", "\\*")[:15]
