@@ -1729,9 +1729,7 @@ async def main():
         except Exception:
             pass
         await callback.message.answer(
-            "🎂 *Сколько тебе лет?*
-
-_Введи число (например: 25)_",
+            "🎂 *Сколько тебе лет?*\n\n_Введи число (например: 25)_",
             parse_mode="Markdown",
         )
         _set_onboard_state(uid, "ob_age", state_data)
@@ -2059,9 +2057,7 @@ _Введи число (например: 25)_",
             ob_data = user_states.get(uid, {}).get("data", {})
             ob_data["age"] = age
             await message.answer(
-                "📏 *Какой у тебя рост?*
-
-_Введи в сантиметрах (например: 175)_",
+                "📏 *Какой у тебя рост?*\n\n_Введи в сантиметрах (например: 175)_",
                 parse_mode="Markdown",
             )
             _set_onboard_state(uid, "ob_height", ob_data)
@@ -2081,9 +2077,7 @@ _Введи в сантиметрах (например: 175)_",
             ob_data = user_states.get(uid, {}).get("data", {})
             ob_data["height"] = height
             await message.answer(
-                "⚖️ *Какой у тебя вес?*
-
-_Введи в кг (например: 70 или 70.5)_",
+                "⚖️ *Какой у тебя вес?*\n\n_Введи в кг (например: 70 или 70.5)_",
                 parse_mode="Markdown",
             )
             _set_onboard_state(uid, "ob_weight", ob_data)
@@ -2131,16 +2125,10 @@ _Введи в кг (например: 70 или 70.5)_",
             }
             goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
             await message.answer(
-                f"🎉 *Профиль настроен!*
-
+                f"🎉 *Профиль настроен!*\n\n"
+                f"🎯 Цель: *{goal_label}*\nf"🔥 Норма калорий: *{goal_kcal} ккал/день*
 "
-                f"🎯 Цель: *{goal_label}*
-"
-                f"🔥 Норма калорий: *{goal_kcal} ккал/день*
-"
-                f"🥩 Норма белка: *{protein_goal} г/день*
-
-"
+                f"🥩 Норма белка: *{protein_goal} г/день*\n\n"
                 f"Отправляй фото еды или описывай что съел — "
                 f"буду следить за прогрессом! 📸",
                 parse_mode="Markdown",
