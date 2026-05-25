@@ -2320,88 +2320,88 @@ async def main():
             return
 
         if text == BTN_WATER:
-              glasses = get_water_today(uid)
-              filled = min(glasses, WATER_GOAL)
-              bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
-              pct = round(glasses / WATER_GOAL * 100) if WATER_GOAL else 0
-              status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
-              await message.answer(
-                  f"💧 *Вода сегодня*\n\n"
-                  f"{bar}\n"
-                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
-                  f"{status}",
-                  parse_mode="Markdown",
-                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                      [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
-                  ]),
-              )
-              return
+            glasses = get_water_today(uid)
+            filled = min(glasses, WATER_GOAL)
+            bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
+            pct = round(glasses / WATER_GOAL * 100) if WATER_GOAL else 0
+            status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
+            await message.answer(
+                f"💧 *Вода сегодня*\n\n"
+                f"{bar}\n"
+                f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
+                f"{status}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                    [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
+                ]),
+            )
+            return
 
-          if text == BTN_PLAN:
-              ok, reason = access_check(user)
-              if not ok:
-                  await deny(message, reason)
-                  return
-              if user.get("status") != "paid" or check_subscription_expired(user):
-                  await message.answer(
-                      "🍽 *AI-план питания* — Premium функция
+        if text == BTN_PLAN:
+            ok, reason = access_check(user)
+            if not ok:
+                await deny(message, reason)
+                return
+            if user.get("status") != "paid" or check_subscription_expired(user):
+                await message.answer(
+                    "🍽 *AI-план питания* — Premium функция\n\nПолучи персональный план питания на день на основе твоих целей и нормы КБЖУ 🎯",
 
-                      "Получи персональный план питания на день на основе твоих целей и нормы КБЖУ 🎯",
-                      parse_mode="Markdown",
-                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                          [InlineKeyboardButton(text="⭐ Открыть Premium", callback_data="show_premium")],
-                      ]),
-                  )
-                  return
-              if not user.get("daily_goal"):
-                  await message.answer(
-                      "⚙️ Сначала настрой профиль — нажми *Профиль* → *Пересчитать норму*.",
-                      parse_mode="Markdown",
-                  )
-                  return
-              thinking_msg = await message.answer("🤔 *Составляю план питания...*", parse_mode="Markdown")
-              try:
-                  goal_kcal = user.get("daily_goal", 2000)
-                  protein_g = user.get("protein_goal", 150)
-                  goal_type = user.get("goal_type", "maintain")
-                  gender = user.get("gender", "male")
-                  goal_labels = {"lose": "похудение", "maintain": "поддержание", "gain": "набор массы"}
-                  plan_prompt = (
-                      f"Составь персональный план питания на один день.\n"
-                      f"Параметры: цель={goal_labels.get(goal_type,'поддержание')}, "
-                      f"норма={goal_kcal} ккал, белок={protein_g}г, пол={'мужской' if gender=='male' else 'женский'}.\n"
-                      f"Формат: 4 приёма пищи (завтрак, обед, перекус, ужин).\n"
-                      f"Для каждого: название + калории + КБЖУ (Б/Ж/У в граммах). "
-                      f"В конце итого. Кратко, конкретно. Только реальные блюда, без экзотики."
-                  )
-                  resp = await openai_client.chat.completions.create(
-                      model="meta-llama/llama-4-scout-17b-16e-instruct",
-                      messages=[
-                          {"role": "system", "content": "Профессиональный нутрициолог. Составляй практичные планы питания."},
-                          {"role": "user", "content": plan_prompt},
-                      ],
-                      max_tokens=700,
-                  )
-                  plan_text = resp.choices[0].message.content or ""
-                  try:
-                      await thinking_msg.delete()
-                  except Exception:
-                      pass
-                  await message.answer(
-                      f"🍽 *Твой план питания на сегодня*\n\n{plan_text}",
-                      parse_mode="Markdown",
-                  )
-              except Exception as plan_e:
-                  log.error(f"meal plan error: {plan_e}")
-                  try:
-                      await thinking_msg.delete()
-                  except Exception:
-                      pass
-                  await message.answer("⚠️ Не удалось составить план. Попробуй чуть позже.")
-              return
 
-  
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⭐ Открыть Premium", callback_data="show_premium")],
+                    ]),
+                )
+                return
+            if not user.get("daily_goal"):
+                await message.answer(
+                    "⚙️ Сначала настрой профиль — нажми *Профиль* → *Пересчитать норму*.",
+                    parse_mode="Markdown",
+                )
+                return
+            thinking_msg = await message.answer("🤔 *Составляю план питания...*", parse_mode="Markdown")
+            try:
+                goal_kcal = user.get("daily_goal", 2000)
+                protein_g = user.get("protein_goal", 150)
+                goal_type = user.get("goal_type", "maintain")
+                gender = user.get("gender", "male")
+                goal_labels = {"lose": "похудение", "maintain": "поддержание", "gain": "набор массы"}
+                plan_prompt = (
+                    f"Составь персональный план питания на один день.\n"
+                    f"Параметры: цель={goal_labels.get(goal_type,'поддержание')}, "
+                    f"норма={goal_kcal} ккал, белок={protein_g}г, пол={'мужской' if gender=='male' else 'женский'}.\n"
+                    f"Формат: 4 приёма пищи (завтрак, обед, перекус, ужин).\n"
+                    f"Для каждого: название + калории + КБЖУ (Б/Ж/У в граммах). "
+                    f"В конце итого. Кратко, конкретно. Только реальные блюда, без экзотики."
+                )
+                resp = await openai_client.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=[
+                        {"role": "system", "content": "Профессиональный нутрициолог. Составляй практичные планы питания."},
+                        {"role": "user", "content": plan_prompt},
+                    ],
+                    max_tokens=700,
+                )
+                plan_text = resp.choices[0].message.content or ""
+                try:
+                    await thinking_msg.delete()
+                except Exception:
+                    pass
+                await message.answer(
+                    f"🍽 *Твой план питания на сегодня*\n\n{plan_text}",
+                    parse_mode="Markdown",
+                )
+            except Exception as plan_e:
+                log.error(f"meal plan error: {plan_e}")
+                try:
+                    await thinking_msg.delete()
+                except Exception:
+                    pass
+                await message.answer("⚠️ Не удалось составить план. Попробуй чуть позже.")
+            return
+
+
         if text == BTN_SUB:
             await _show_premium_screen(message.answer, uid, user)
             return
