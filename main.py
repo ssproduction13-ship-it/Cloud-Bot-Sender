@@ -2126,8 +2126,8 @@ async def main():
             goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
             await message.answer(
                 f"🎉 *Профиль настроен!*\n\n"
-                f"🎯 Цель: *{goal_label}*\nf"🔥 Норма калорий: *{goal_kcal} ккал/день*
-"
+                f"🎯 Цель: *{goal_label}*\n"
+                f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
                 f"🥩 Норма белка: *{protein_goal} г/день*\n\n"
                 f"Отправляй фото еды или описывай что съел — "
                 f"буду следить за прогрессом! 📸",
