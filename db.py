@@ -83,7 +83,16 @@ def init_db():
                     date        TEXT DEFAULT (CURRENT_DATE::TEXT)
                 );
 
-                CREATE TABLE IF NOT EXISTS onboard_state (
+                CREATE TABLE IF NOT EXISTS water_logs (
+                      id          SERIAL PRIMARY KEY,
+                      telegram_id BIGINT,
+                      glasses     INTEGER DEFAULT 0,
+                      date        TEXT DEFAULT (CURRENT_DATE::TEXT),
+                      updated_at  TEXT DEFAULT (NOW()::TEXT),
+                      UNIQUE(telegram_id, date)
+                  );
+
+                                  CREATE TABLE IF NOT EXISTS onboard_state (
                     telegram_id BIGINT PRIMARY KEY,
                     state       TEXT NOT NULL,
                     data_json   TEXT DEFAULT '{}',
@@ -120,6 +129,7 @@ def init_db():
                 ("carbs_g",   "REAL"),
                 ("food_name", "TEXT"),
                 ("deleted",   "BOOLEAN DEFAULT FALSE"),
+                ("meal_type", "TEXT DEFAULT 'other'"),
             ]
             for col, definition in new_usage_cols:
                 cur.execute(f"ALTER TABLE usage ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -382,16 +392,16 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
 # ── Usage & Macros ─────────────────────────────────────────────────────────
 
 def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
-                 food_name=None) -> int:
+                 food_name=None, meal_type="other") -> int:
     now = datetime.utcnow()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO usage
-                   (telegram_id, used_at, date, calories, protein_g, fat_g, carbs_g, food_name)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                   (telegram_id, used_at, date, calories, protein_g, fat_g, carbs_g, food_name, meal_type)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                 (telegram_id, now.isoformat(), now.strftime("%Y-%m-%d"),
-                 kcal, protein, fat, carbs, food_name),
+                 kcal, protein, fat, carbs, food_name, meal_type),
             )
             entry_id = cur.fetchone()[0]
         conn.commit()
@@ -681,3 +691,149 @@ def get_referral_stats(telegram_id):
             )
             row = cur.fetchone()
             return {"total": row[0], "paid": row[1]}
+
+
+  # ── Subscription expiry helpers ─────────────────────────────────────────────
+
+  def get_expiring_users(days_ahead: int) -> list:
+      """Return paid users whose subscription expires in exactly days_ahead days."""
+      target_date = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+              cur.execute(
+                  """SELECT * FROM users
+                     WHERE status = 'paid'
+                       AND expires_at IS NOT NULL
+                       AND LEFT(expires_at, 10) = %s""",
+                  (target_date,),
+              )
+              return [dict(r) for r in cur.fetchall()]
+
+
+  def get_winback_users() -> list:
+      """Return paid users whose subscription expired exactly 3 days ago."""
+      target_date = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+              cur.execute(
+                  """SELECT * FROM users
+                     WHERE status = 'paid'
+                       AND expires_at IS NOT NULL
+                       AND LEFT(expires_at, 10) = %s""",
+                  (target_date,),
+              )
+              return [dict(r) for r in cur.fetchall()]
+
+
+  def get_streak_users_no_log_today() -> list:
+      """Return active users with streak > 0 who have no entries today."""
+      today = datetime.utcnow().strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+              cur.execute(
+                  """SELECT u.* FROM users u
+                     WHERE u.streak_days > 0
+                       AND u.status IN ('beta', 'paid')
+                       AND NOT EXISTS (
+                           SELECT 1 FROM usage g
+                           WHERE g.telegram_id = u.telegram_id
+                             AND g.date = %s
+                             AND (g.deleted IS NULL OR g.deleted = FALSE)
+                       )""",
+                  (today,),
+              )
+              return [dict(r) for r in cur.fetchall()]
+
+
+  # ── Water tracker ─────────────────────────────────────────────────────────────
+
+  def add_water_log(telegram_id: int) -> int:
+      """Add one glass of water for today; return total glasses today."""
+      today = datetime.utcnow().strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor() as cur:
+              cur.execute(
+                  """INSERT INTO water_logs (telegram_id, glasses, date, updated_at)
+                     VALUES (%s, 1, %s, %s)
+                     ON CONFLICT (telegram_id, date)
+                     DO UPDATE SET glasses    = water_logs.glasses + 1,
+                                   updated_at = EXCLUDED.updated_at
+                     RETURNING glasses""",
+                  (telegram_id, today, datetime.utcnow().isoformat()),
+              )
+              result = cur.fetchone()
+          conn.commit()
+      return result[0] if result else 1
+
+
+  def reset_water_today(telegram_id: int) -> None:
+      today = datetime.utcnow().strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor() as cur:
+              cur.execute(
+                  "UPDATE water_logs SET glasses=0 WHERE telegram_id=%s AND date=%s",
+                  (telegram_id, today),
+              )
+          conn.commit()
+
+
+  def get_water_today(telegram_id: int) -> int:
+      today = datetime.utcnow().strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor() as cur:
+              cur.execute(
+                  "SELECT glasses FROM water_logs WHERE telegram_id=%s AND date=%s",
+                  (telegram_id, today),
+              )
+              row = cur.fetchone()
+      return row[0] if row else 0
+
+
+  # ── Segmented broadcast helpers ───────────────────────────────────────────────
+
+  def get_users_by_segment(segment: str) -> list:
+      """
+      segment values:
+        'all_active'   — status in beta/paid
+        'trial_active' — status=beta, trial not expired
+        'sub_expired'  — status=paid, subscription expired
+        'no_log_week'  — no usage records in last 7 days
+        'paid_active'  — status=paid, subscription active
+      """
+      now = datetime.utcnow()
+      today = now.strftime("%Y-%m-%d")
+      week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+      with get_conn() as conn:
+          with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+              if segment == "all_active":
+                  cur.execute("SELECT * FROM users WHERE status IN ('beta','paid')")
+              elif segment == "trial_active":
+                  cur.execute(
+                      "SELECT * FROM users WHERE status='beta' AND trial_expires_at > %s",
+                      (today,),
+                  )
+              elif segment == "sub_expired":
+                  cur.execute(
+                      "SELECT * FROM users WHERE status='paid' AND LEFT(expires_at,10) < %s",
+                      (today,),
+                  )
+              elif segment == "no_log_week":
+                  cur.execute(
+                      """SELECT u.* FROM users u
+                         WHERE u.status IN ('beta','paid')
+                           AND NOT EXISTS (
+                               SELECT 1 FROM usage g
+                               WHERE g.telegram_id = u.telegram_id
+                                 AND g.date >= %s
+                           )""",
+                      (week_ago,),
+                  )
+              elif segment == "paid_active":
+                  cur.execute(
+                      "SELECT * FROM users WHERE status='paid' AND LEFT(expires_at,10) >= %s",
+                      (today,),
+                  )
+              else:
+                  cur.execute("SELECT * FROM users WHERE status IN ('beta','paid')")
+              return [dict(r) for r in cur.fetchall()]
+  
