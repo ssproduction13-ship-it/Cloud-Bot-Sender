@@ -100,21 +100,14 @@ user_states: dict[int, dict] = {}
 
 STATES = {
     "GOAL_ENTER":             "goal_enter",
-    "CALC_AGE":               "calc_age",
-    "CALC_WEIGHT":            "calc_weight",
-    "CALC_HEIGHT":            "calc_height",
     "MANUAL_ENTRY":           "manual_entry",
     "CORRECT_ENTRY":          "correct_entry",
     "WEIGHT_LOG":             "weight_log",
     # Onboarding
-    "ONBOARD_WEIGHT":         "onboard_weight",
-    "ONBOARD_HEIGHT":         "onboard_height",
-    "ONBOARD_AGE":            "onboard_age",
     "ONBOARD_GOAL_TYPE":      "onboard_goal_type",
-    "ONBOARD_WAIT_GENDER":    "onboard_wait_gender",
-    "ONBOARD_WAIT_ACTIVITY":  "onboard_wait_activity",
-    # Goal-calc flow
-    "CALC_GENDER":            "calc_gender",
+    # Unified TDEE calc — both onboarding and profile
+    "CALC_PARAMS":            "calc_params",
+    # Goal-ask flow
     "GOAL_ASK":               "goal_ask",
     # Admin
     "ADMIN_GIVE_DAYS":        "admin_give_days",
@@ -126,11 +119,7 @@ _STATE_TTL_SECONDS = 3600
 
 # Onboarding states that need to survive bot restarts
 ONBOARD_STATES = {
-    STATES["ONBOARD_WEIGHT"],
-    STATES["ONBOARD_HEIGHT"],
-    STATES["ONBOARD_AGE"],
-    STATES["ONBOARD_WAIT_GENDER"],
-    STATES["ONBOARD_WAIT_ACTIVITY"],
+    STATES["CALC_PARAMS"],
 }
 
 
@@ -703,47 +692,21 @@ async def start_onboarding(bot: Bot, uid: int, name: str):
     except Exception:
         persisted = None
 
-    if persisted and persisted.get("state") in ONBOARD_STATES:
-        # Restore to memory and prompt to continue
-        st = persisted["state"]
-        d  = persisted["data"]
-        user_states[uid] = {"state": st, "data": d, "_ts": datetime.utcnow()}
-
-        step_msgs = {
-            STATES["ONBOARD_WEIGHT"]:        "Введи свой текущий вес в кг _(например: 75 или 75.5)_:",
-            STATES["ONBOARD_HEIGHT"]:        "Введи рост в см _(например: 175)_:",
-            STATES["ONBOARD_AGE"]:           "Введи возраст _(например: 28)_:",
-            STATES["ONBOARD_WAIT_GENDER"]:   None,
-            STATES["ONBOARD_WAIT_ACTIVITY"]: None,
-        }
-        prompt = step_msgs.get(st)
-        if prompt:
-            await bot.send_message(
-                uid,
-                f"Продолжаем настройку профиля 👇\n\n{prompt}",
-                parse_mode="Markdown",
-            )
-        elif st == STATES["ONBOARD_WAIT_GENDER"]:
-            await bot.send_message(
-                uid,
-                "Продолжаем настройку профиля 👇\n\nУкажи пол:",
-                parse_mode="Markdown",
-                reply_markup=gender_keyboard(),
-            )
-        elif st == STATES["ONBOARD_WAIT_ACTIVITY"]:
-            await bot.send_message(
-                uid,
-                "Продолжаем настройку профиля 👇\n\nУровень активности:",
-                parse_mode="Markdown",
-                reply_markup=activity_keyboard(
-                    weight=d.get("weight", 0),
-                    height=d.get("height", 0),
-                    age=d.get("age", 0),
-                    gender=d.get("gender", "m"),
-                    goal_type=d.get("goal_type", "track"),
-                    from_onboard=bool(d.get("_from_onboard")),
-                ),
-            )
+    if persisted and persisted.get("state") == STATES["CALC_PARAMS"]:
+        # Restore CALC_PARAMS state and re-prompt for body params
+        d = persisted.get("data", {})
+        user_states[uid] = {"state": STATES["CALC_PARAMS"], "data": d, "_ts": datetime.utcnow()}
+        labels = {"lose": "📉 Похудеть", "gain": "📈 Набрать массу", "maintain": "⚖️ Поддерживать"}
+        goal_label = labels.get(d.get("goal_type", ""), "")
+        goal_line = f"Цель: *{goal_label}*\n\n" if goal_label else ""
+        await bot.send_message(
+            uid,
+            f"Продолжаем! {goal_line}"
+            f"Введи вес, рост, возраст и пол одним сообщением:\n\n"
+            f"`вес рост возраст пол`\n\n"
+            f"Пример: `75 175 28 м` или `60 165 25 ж`",
+            parse_mode="Markdown",
+        )
         return
 
     # Fresh onboarding start
@@ -1476,12 +1439,16 @@ async def main():
                 reply_markup=main_keyboard(is_admin))
             return
 
-        # Ask for weight — set _from_onboard=True from the very start and persist to DB
-        _set_onboard_state(uid, STATES["ONBOARD_WEIGHT"],
-                           {"goal_type": goal_type, "_from_onboard": True})
+        # Save goal_type + is_onboard flag in CALC_PARAMS state (persisted to DB)
+        _set_onboard_state(uid, STATES["CALC_PARAMS"],
+                           {"goal_type": goal_type, "is_onboard": True})
         await callback.message.edit_text(
             f"*{label}* — отличный выбор! 💪\n\n"
-            f"Шаг 1/4 — введи свой текущий вес в кг:\n_(например: 75 или 75.5)_",
+            f"Введи вес, рост, возраст и пол одним сообщением:\n\n"
+            f"`вес рост возраст пол`\n\n"
+            f"Пример: `75 175 28 м` — мужчина\n"
+            f"`60 165 25 ж` — женщина\n\n"
+            f"_/cancel — отмена_",
             parse_mode="Markdown",
         )
 
@@ -1504,55 +1471,17 @@ async def main():
             )
             return
 
-        # goal_calc → ask gender
-        user_states[uid] = {"state": "calc_gender", "data": {}}
+        # goal_calc → ask for all body params in one message
+        goal_type = (user.get("goal_type") if user else None) or "track"
+        _set_onboard_state(uid, STATES["CALC_PARAMS"],
+                           {"goal_type": goal_type, "is_onboard": False})
         await callback.message.edit_text(
-            "🧮 *Рассчитаю норму по формуле Mifflin-St Jeor*\n\nВыбери пол:",
-            parse_mode="Markdown",
-            reply_markup=gender_keyboard(),
-        )
-
-    @dp.callback_query(F.data.in_({"gender_m", "gender_f"}))
-    async def cb_gender(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-
-        # Restore persisted onboarding state if the bot was restarted
-        _try_restore_onboard(uid)
-
-        state_obj = user_states.get(uid, {})
-        gender = "m" if callback.data == "gender_m" else "f"
-
-        cur_state = state_obj.get("state", "")
-        cur_data  = state_obj.get("data", {})
-        cur_data["gender"] = gender
-
-        # Onboarding flow: after age we wait for gender → then activity
-        if cur_state == STATES["ONBOARD_WAIT_GENDER"]:
-            cur_data["_from_onboard"] = True
-            _set_onboard_state(uid, STATES["ONBOARD_WAIT_ACTIVITY"], cur_data)
-            await callback.message.edit_text(
-                f"{'♂️' if gender == 'm' else '♀️'} Записал!\n\nУровень активности:",
-                parse_mode="Markdown",
-                reply_markup=activity_keyboard(
-                    weight=cur_data.get("weight", 0),
-                    height=cur_data.get("height", 0),
-                    age=cur_data.get("age", 0),
-                    gender=gender,
-                    goal_type=cur_data.get("goal_type", "track"),
-                    from_onboard=True,
-                ),
-            )
-            return
-
-        # Regular goal-calc flow (from profile → Рассчитай мне)
-        user_states[uid] = {
-            "state": STATES["CALC_WEIGHT"],
-            "data":  cur_data,
-            "_ts":   datetime.utcnow(),
-        }
-        await callback.message.edit_text(
-            "Введи свой вес в кг:\n_(например: 75 или 75.5)_",
+            "🧮 *Рассчитаю норму по формуле Mifflin-St Jeor*\n\n"
+            "Введи вес, рост, возраст и пол одним сообщением:\n\n"
+            "`вес рост возраст пол`\n\n"
+            "Пример: `75 175 28 м` — мужчина\n"
+            "`60 165 25 ж` — женщина\n\n"
+            "_/cancel — отмена_",
             parse_mode="Markdown",
         )
 
@@ -2377,56 +2306,66 @@ async def main():
             await message.answer(f"📡 Рассылка: ✅{sent} ❌{failed}")
             return
 
-        # ── Onboarding weight ──────────────────────────────────────────────────
-        if state == STATES["ONBOARD_WEIGHT"]:
+        # ── CALC_PARAMS: single-message input "75 175 28 м" ───────────────────────
+        if state == STATES["CALC_PARAMS"]:
+            parts = text.split()
+            error_prompt = (
+                "⚠️ Не могу разобрать. Введи 4 значения через пробел:\n\n"
+                "`вес рост возраст пол`\n\n"
+                "Пример: `75 175 28 м` или `60 165 25 ж`\n\n"
+                "_/cancel — отмена_"
+            )
+            if len(parts) < 3:
+                await message.answer(error_prompt, parse_mode="Markdown")
+                return
             try:
-                weight = float(text.replace(",", "."))
+                weight = float(parts[0].replace(",", "."))
+                height = float(parts[1].replace(",", "."))
+                age    = int(parts[2])
                 if not (20 <= weight <= 400):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи корректный вес от 20 до 400 кг (например: 75):")
-                return
-            state_data["data"]["weight"] = weight
-            _set_onboard_state(uid, STATES["ONBOARD_HEIGHT"], state_data["data"])
-            await message.answer(
-                f"Вес *{weight} кг* — записал ✅\n\nШаг 2/4 — рост в см:\n_(например: 175)_",
-                parse_mode="Markdown",
-            )
-            return
-
-        # ── Onboarding height ──────────────────────────────────────────────────
-        if state == STATES["ONBOARD_HEIGHT"]:
-            try:
-                height = float(text.replace(",", "."))
+                    raise ValueError("weight")
                 if not (100 <= height <= 250):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи корректный рост от 100 до 250 см (например: 175):")
-                return
-            state_data["data"]["height"] = height
-            _set_onboard_state(uid, STATES["ONBOARD_AGE"], state_data["data"])
-            await message.answer(
-                f"Рост *{int(height)} см* — отлично ✅\n\nШаг 3/4 — сколько тебе лет?",
-                parse_mode="Markdown",
-            )
-            return
-
-        # ── Onboarding age ─────────────────────────────────────────────────────
-        if state == STATES["ONBOARD_AGE"]:
-            try:
-                age = int(text)
+                    raise ValueError("height")
                 if not (10 <= age <= 100):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи возраст от 10 до 100:")
+                    raise ValueError("age")
+            except (ValueError, IndexError):
+                await message.answer(error_prompt, parse_mode="Markdown")
                 return
-            state_data["data"]["age"] = age
-            state_data["data"]["_from_onboard"] = True
-            _set_onboard_state(uid, STATES["ONBOARD_WAIT_GENDER"], state_data["data"])
+
+            # Parse gender (optional 4th token, defaults to 'm')
+            gender = "m"
+            if len(parts) >= 4:
+                g_raw = parts[3].lower().strip(".,")
+                if g_raw in ("ж", "ж.", "жен", "женщина", "женский", "f", "female", "w", "2"):
+                    gender = "f"
+                elif g_raw in ("м", "м.", "муж", "мужчина", "мужской", "m", "male", "1"):
+                    gender = "m"
+                else:
+                    await message.answer(
+                        f"⚠️ Не понял пол: *{parts[3]}*\n\n"
+                        f"Напиши `м` (мужчина) или `ж` (женщина) последним словом.\n\n"
+                        f"Пример: `{parts[0]} {parts[1]} {parts[2]} м`",
+                        parse_mode="Markdown",
+                    )
+                    return
+
+            d = state_data.get("data", {})
+            goal_type  = d.get("goal_type") or (user.get("goal_type") if user else "track") or "track"
+            is_onboard = bool(d.get("is_onboard", False))
+
+            gender_icon = "♂️" if gender == "m" else "♀️"
             await message.answer(
-                f"*{age} лет* — отлично! ✅\n\nШаг 4/4 — укажи пол для точного расчёта:",
+                f"✅ *{weight} кг, {int(height)} см, {age} лет, {gender_icon}*\n\n"
+                f"Последний шаг — выбери уровень активности:",
                 parse_mode="Markdown",
-                reply_markup=gender_keyboard(),
+                reply_markup=activity_keyboard(
+                    weight=weight,
+                    height=height,
+                    age=age,
+                    gender=gender,
+                    goal_type=goal_type,
+                    from_onboard=is_onboard,
+                ),
             )
             return
 
@@ -2445,66 +2384,6 @@ async def main():
                 f"✅ *Норма установлена: {kcal} ккал*",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
-            return
-
-        # ── Calc weight ────────────────────────────────────────────────────────
-        if state == STATES["CALC_WEIGHT"]:
-            try:
-                weight = float(text.replace(",", "."))
-                if not (20 <= weight <= 400):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи вес от 20 до 400 кг:")
-                return
-            state_data["data"]["weight"] = weight
-            state_data["state"] = STATES["CALC_HEIGHT"]
-            user_states[uid] = state_data
-            await message.answer("Рост в см (например: 175):")
-            return
-
-        # ── Calc height ────────────────────────────────────────────────────────
-        if state == STATES["CALC_HEIGHT"]:
-            try:
-                height = float(text.replace(",", "."))
-                if not (100 <= height <= 250):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи рост от 100 до 250 см:")
-                return
-            state_data["data"]["height"] = height
-            state_data["state"] = STATES["CALC_AGE"]
-            user_states[uid] = state_data
-            await message.answer("Возраст (лет):")
-            return
-
-        # ── Calc age ───────────────────────────────────────────────────────────
-        if state == STATES["CALC_AGE"]:
-            try:
-                age = int(text)
-                if not (10 <= age <= 100):
-                    raise ValueError
-            except ValueError:
-                await message.answer("⚠️ Введи возраст от 10 до 100:")
-                return
-            state_data["data"]["age"] = age
-            state_data["state"] = STATES["ONBOARD_WAIT_ACTIVITY"]
-            state_data.setdefault("data", {})["_from_onboard"] = False
-            user_states[uid] = state_data
-            d_calc = state_data["data"]
-            # For the profile recalc flow, goal_type isn't in state — read from DB
-            calc_goal_type = d_calc.get("goal_type") or (user.get("goal_type") if user else "track") or "track"
-            await message.answer(
-                f"*{age} лет* — записал ✅\n\nПоследний шаг — уровень активности:",
-                parse_mode="Markdown",
-                reply_markup=activity_keyboard(
-                    weight=d_calc.get("weight", 0),
-                    height=d_calc.get("height", 0),
-                    age=age,
-                    gender=d_calc.get("gender", "m"),
-                    goal_type=calc_goal_type,
-                    from_onboard=False,
-                ),
             )
             return
 
