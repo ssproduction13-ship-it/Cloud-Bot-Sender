@@ -171,16 +171,17 @@ VISION_PROMPT = """Ты — эксперт по еде. Опиши фото:
 
 Если это не еда — напиши только: НЕ ЕДА"""
 
-NUTRITION_PROMPT = """Ты — дружелюбный AI-тренер по питанию с характером. Рассчитай КБЖУ.
+NUTRITION_PROMPT = """Ты — AI-тренер по питанию. Рассчитай КБЖУ.
 
 Блюдо: {desc}
 
 Ответь СТРОГО в этом формате:
 🍽 *{{название}}* (~{{вес}} г)
 
-🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
+🔥 {{ккал}} ккал
+Б {{б}} • Ж {{ж}} • У {{у}} г
 
-💬 {{живой комментарий от тренера — как друг, не как справочник. Оцени выбор, дай одну практическую рекомендацию. 1-2 предложения с эмодзи. Будь конкретным.}}
+💬 {{1-2 коротких строки. Конкретно, без воды. Максимум 15 слов. Один эмодзи в конце.}}
 
 KCAL:{{ккал}}
 PROTEIN:{{б}}
@@ -188,7 +189,7 @@ FAT:{{ж}}
 CARBS:{{у}}
 NAME:{{название}}"""
 
-TEXT_NUTRITION_PROMPT = """Ты — дружелюбный AI-тренер по питанию с характером.
+TEXT_NUTRITION_PROMPT = """Ты — AI-тренер по питанию.
 
 Блюдо/продукт: {desc}
 
@@ -197,9 +198,10 @@ TEXT_NUTRITION_PROMPT = """Ты — дружелюбный AI-тренер по 
 Иначе ответь СТРОГО в этом формате:
 🍽 *{{название}}* (~{{вес}} г)
 
-🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
+🔥 {{ккал}} ккал
+Б {{б}} • Ж {{ж}} • У {{у}} г
 
-💬 {{живой комментарий — как друг, не как справочник. 1-2 предложения с эмодзи.}}
+💬 {{1-2 коротких строки. Конкретно, без воды. Максимум 15 слов. Один эмодзи в конце.}}
 
 KCAL:{{ккал}}
 PROTEIN:{{б}}
@@ -456,22 +458,22 @@ def daily_progress_text(uid: int, user: dict | None = None,
     score = calc_daily_score(total, macros["protein"], macros["fat"], macros["carbs"],
                              goal, goal_protein, meals)
     fs = format_score(score)
-    score_line = f"\n{score_emoji(score)} Оценка питания: *{fs}/10*" if total > 0 else ""
-
-    protein_line = ""
-    if macros["protein"] > 0:
-        protein_line = f"\n🥩 Б {macros['protein']}г  Ж {macros['fat']}г  У {macros['carbs']}г"
+    score_line = f"\n🍽 Balance Score: *{fs}/10*" if total > 0 else ""
+    streak_line = (
+        f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
+        if streak > 0 else ""
+    )
 
     if not goal:
-        return f"\n\n🍽 *{total} ккал* сегодня{protein_line}{score_line}{streak_line}"
+        return f"\n\n📊 *Сегодня: {total} ккал*{score_line}{streak_line}"
 
     remaining = max(goal - total, 0)
     over = total - goal
-    status_line = f"\n⚡ +{over} ккал сверх нормы" if over > 0 else f"\n✨ Ещё {remaining} ккал до нормы"
+    status_line = f"⚡ +{over} ккал сверх нормы" if over > 0 else f"Осталось {remaining} ккал"
 
     return (
-        f"\n\n🍽 *{total} / {goal} ккал*"
-        f"{status_line}{protein_line}"
+        f"\n\n📊 *Сегодня: {total} / {goal} ккал*\n"
+        f"{status_line}"
         f"{score_line}{streak_line}"
     )
 
@@ -743,10 +745,10 @@ async def send_evening_summaries(bot: Bot):
             await bot.send_message(
                 uid,
                 f"🌙 *Итоги дня*\n\n"
-                f"🍽 *{total}{f' / {goal}' if goal else ''} ккал*\n"
+                f"*{total}{f' / {goal}' if goal else ''} ккал*\n"
                 f"{result_line}{protein_line}"
                 f"{streak_line}\n\n"
-                f"{score_emoji(score)} Оценка: *{fs}/10*\n"
+                f"🍽 Balance Score: *{fs}/10*\n"
                 f"💬 _{comment}_",
                 parse_mode="Markdown",
             )
@@ -1931,30 +1933,30 @@ async def main():
             )
             comment = ai_score_comment(score, macros["protein"], macros["carbs"],
                                        total, goal, None) if total > 0 else ""
-            score_line = f"\n\n{score_emoji(score)} Оценка питания: *{fs}/10*" if total > 0 else ""
+            score_line = f"\n🍽 Balance Score: *{fs}/10*" if total > 0 else ""
             comment_line = f"\n💬 _{comment}_" if comment else ""
 
             if goal:
                 remaining = max(goal - total, 0)
                 over = total - goal
                 if over > 0:
-                    status = f"⚡ *+{over} ккал* сверх нормы"
+                    status = f"⚡ +{over} ккал сверх нормы"
                 else:
                     pct = round(total / goal * 100)
-                    status = f"✨ Выполнено *{pct}%* — ещё {remaining} ккал"
+                    status = f"Выполнено {pct}% — ещё {remaining} ккал"
                 text_out = (
                     f"📊 *Мой прогресс*\n\n"
-                    f"🍽 Сегодня: *{total} / {goal} ккал*\n"
+                    f"*{total} / {goal} ккал*\n"
                     f"{status}\n"
-                    f"🍴 Приёмов: {meals}{macros_line}"
+                    f"Приёмов: {meals}{macros_line}"
                     f"{streak_line}"
                     f"{score_line}{comment_line}"
                 )
             else:
                 text_out = (
                     f"📊 *Мой прогресс*\n\n"
-                    f"🍽 Сегодня: *{total} ккал*\n"
-                    f"🍴 Приёмов: {meals}{macros_line}"
+                    f"*{total} ккал* сегодня\n"
+                    f"Приёмов: {meals}{macros_line}"
                     f"{streak_line}"
                     f"{score_line}{comment_line}"
                     f"\n\n_💡 Установи цель в ⚙️ Профиль_"
