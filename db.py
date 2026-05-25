@@ -94,6 +94,13 @@ def init_db():
                 );
             """)
 
+        # Commit table creations BEFORE the ALTER TABLE migration loop.
+        # Each ALTER TABLE failure calls conn.rollback(); without this commit,
+        # that rollback would also undo the CREATE TABLE statements above
+        # (including onboard_state), leaving the table permanently missing.
+        conn.commit()
+
+        with conn.cursor() as cur:
             new_user_cols = [
                 ("streak_days",      "INTEGER DEFAULT 0"),
                 ("best_streak",      "INTEGER DEFAULT 0"),
