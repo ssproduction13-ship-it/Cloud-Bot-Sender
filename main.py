@@ -1578,10 +1578,13 @@ async def main():
             except Exception:
                 await callback.message.answer(result_text, parse_mode="Markdown")
 
-            await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+            try:
+                await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+            except Exception:
+                pass
 
         except Exception as e:
-            log.error(f"cb_activity error uid={uid}: {e}", exc_info=True)
+            log.error(f"cb_activity error uid={uid}: {e!r}", exc_info=True)
             # Still mark onboarded so user doesn't loop forever — they can set goal manually
             if is_onboarding:
                 try:
