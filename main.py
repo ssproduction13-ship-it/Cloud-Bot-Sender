@@ -794,6 +794,12 @@ async def main():
         if not state:
             return
 
+        # Universal cancel inside any state
+        if text.lower() in ("отмена", "❌ отмена", "cancel", "отмен", "нет", "выход", "назад"):
+            user_states.pop(uid, None)
+            await message.answer("❌ Отменено.", reply_markup=main_keyboard(uid == ADMIN_ID))
+            return
+
         s = state["state"]
         data = state["data"]
 
@@ -941,12 +947,20 @@ async def main():
 
         if s == STATES["CORRECT_ENTRY"]:
             entry_id = data.get("entry_id")
+            digits = re.sub(r"\D", "", text)
+            if not digits:
+                await message.answer(
+                    "Введи число от 1 до 9999 ккал, или /cancel для отмены:"
+                )
+                return
             try:
-                new_kcal = int(re.sub(r"\D", "", text))
+                new_kcal = int(digits)
                 if new_kcal < 1 or new_kcal > 9999:
                     raise ValueError
             except (ValueError, TypeError):
-                await message.answer("Введи число от 1 до 9999 ккал:")
+                await message.answer(
+                    "Введи число от 1 до 9999 ккал, или /cancel для отмены:"
+                )
                 return
             user_states.pop(uid, None)
             if entry_id:
