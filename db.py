@@ -1,14 +1,13 @@
 import os
 import psycopg2
 import psycopg2.extras
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
+    return psycopg2.connect(DATABASE_URL)
 
 
 def init_db():
@@ -25,7 +24,15 @@ def init_db():
                     created_at       TEXT DEFAULT (NOW()::TEXT),
                     referred_by      BIGINT,
                     daily_goal       INTEGER,
-                    trial_expires_at TEXT
+                    trial_expires_at TEXT,
+                    streak_days      INTEGER DEFAULT 0,
+                    best_streak      INTEGER DEFAULT 0,
+                    last_active_date TEXT,
+                    protein_goal     INTEGER,
+                    weight_kg        REAL,
+                    height_cm        REAL,
+                    age              INTEGER,
+                    goal_type        TEXT DEFAULT 'track'
                 );
 
                 CREATE TABLE IF NOT EXISTS usage (
@@ -33,7 +40,10 @@ def init_db():
                     telegram_id BIGINT,
                     used_at     TEXT DEFAULT (NOW()::TEXT),
                     date        TEXT DEFAULT (CURRENT_DATE::TEXT),
-                    calories    INTEGER
+                    calories    INTEGER,
+                    protein_g   REAL,
+                    fat_g       REAL,
+                    carbs_g     REAL
                 );
 
                 CREATE TABLE IF NOT EXISTS referrals (
@@ -44,8 +54,47 @@ def init_db():
                     bonus_given INTEGER DEFAULT 0,
                     created_at  TEXT DEFAULT (NOW()::TEXT)
                 );
+
+                CREATE TABLE IF NOT EXISTS weight_logs (
+                    id          SERIAL PRIMARY KEY,
+                    telegram_id BIGINT,
+                    weight_kg   REAL,
+                    logged_at   TEXT DEFAULT (NOW()::TEXT),
+                    date        TEXT DEFAULT (CURRENT_DATE::TEXT)
+                );
             """)
+
+            new_user_cols = [
+                ("streak_days",      "INTEGER DEFAULT 0"),
+                ("best_streak",      "INTEGER DEFAULT 0"),
+                ("last_active_date", "TEXT"),
+                ("protein_goal",     "INTEGER"),
+                ("weight_kg",        "REAL"),
+                ("height_cm",        "REAL"),
+                ("age",              "INTEGER"),
+                ("goal_type",        "TEXT DEFAULT 'track'"),
+            ]
+            for col, definition in new_user_cols:
+                try:
+                    cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                except Exception:
+                    conn.rollback()
+
+            new_usage_cols = [
+                ("protein_g", "REAL"),
+                ("fat_g",     "REAL"),
+                ("carbs_g",   "REAL"),
+            ]
+            for col, definition in new_usage_cols:
+                try:
+                    cur.execute(f"ALTER TABLE usage ADD COLUMN {col} {definition}")
+                except Exception:
+                    conn.rollback()
+
         conn.commit()
+
+
+# ── Users ──────────────────────────────────────────────────────────────────
 
 
 def upsert_user(telegram_id, username, first_name, referred_by=None):
@@ -100,13 +149,19 @@ def is_trial_expired(telegram_id):
     return datetime.utcnow() > datetime.fromisoformat(user["trial_expires_at"])
 
 
-def set_daily_goal(telegram_id, goal):
+def set_daily_goal(telegram_id, goal, protein_goal=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE users SET daily_goal=%s WHERE telegram_id=%s",
-                (goal, telegram_id),
-            )
+            if protein_goal is not None:
+                cur.execute(
+                    "UPDATE users SET daily_goal=%s, protein_goal=%s WHERE telegram_id=%s",
+                    (goal, protein_goal, telegram_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE users SET daily_goal=%s WHERE telegram_id=%s",
+                    (goal, telegram_id),
+                )
         conn.commit()
 
 
@@ -151,13 +206,75 @@ def get_all_users(status_filter=None):
             return [dict(r) for r in cur.fetchall()]
 
 
-def record_usage(telegram_id, kcal=None) -> int:
+def get_active_users():
+    """Users with active subscription who logged food in last 7 days."""
+    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT u.* FROM users u
+                JOIN usage g ON g.telegram_id = u.telegram_id
+                WHERE u.status IN ('beta', 'paid')
+                  AND g.date >= %s
+                """,
+                (week_ago,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+# ── Streak ─────────────────────────────────────────────────────────────────
+
+
+def update_streak(telegram_id) -> tuple[int, bool]:
+    """Update streak. Returns (current_streak, milestone_hit)."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    user = get_user(telegram_id)
+    if not user:
+        return 0, False
+
+    last = user.get("last_active_date")
+    streak = user.get("streak_days") or 0
+    best = user.get("best_streak") or 0
+
+    if last == today:
+        return streak, False
+
+    if last == yesterday:
+        streak += 1
+    else:
+        streak = 1
+
+    new_best = max(best, streak)
+    milestone = streak in (3, 7, 14, 30, 60, 100)
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET streak_days=%s, best_streak=%s, last_active_date=%s
+                   WHERE telegram_id=%s""",
+                (streak, new_best, today, telegram_id),
+            )
+        conn.commit()
+
+    return streak, milestone
+
+
+# ── Usage & Macros ─────────────────────────────────────────────────────────
+
+
+def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None) -> int:
     now = datetime.utcnow()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO usage (telegram_id, used_at, date, calories) VALUES (%s, %s, %s, %s) RETURNING id",
-                (telegram_id, now.isoformat(), now.strftime("%Y-%m-%d"), kcal),
+                """INSERT INTO usage (telegram_id, used_at, date, calories, protein_g, fat_g, carbs_g)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (telegram_id, now.isoformat(), now.strftime("%Y-%m-%d"),
+                 kcal, protein, fat, carbs),
             )
             entry_id = cur.fetchone()[0]
         conn.commit()
@@ -196,6 +313,108 @@ def get_daily_calories(telegram_id):
             return int(cur.fetchone()[0])
 
 
+def get_daily_macros(telegram_id):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT COALESCE(SUM(calories),0),
+                          COALESCE(SUM(protein_g),0),
+                          COALESCE(SUM(fat_g),0),
+                          COALESCE(SUM(carbs_g),0)
+                   FROM usage WHERE telegram_id=%s AND date=%s""",
+                (telegram_id, today),
+            )
+            row = cur.fetchone()
+            return {"kcal": int(row[0]), "protein": round(row[1]), "fat": round(row[2]), "carbs": round(row[3])}
+
+
+def get_calories_for_date(telegram_id, date_str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(SUM(calories),0) FROM usage WHERE telegram_id=%s AND date=%s",
+                (telegram_id, date_str),
+            )
+            return int(cur.fetchone()[0])
+
+
+# ── Weekly stats ───────────────────────────────────────────────────────────
+
+
+def get_weekly_stats(telegram_id):
+    """Stats for the last 7 days."""
+    today = datetime.utcnow().date()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT date,
+                          COALESCE(SUM(calories),0) AS kcal,
+                          COALESCE(SUM(protein_g),0) AS protein
+                   FROM usage
+                   WHERE telegram_id=%s AND date >= %s
+                   GROUP BY date""",
+                (telegram_id, days[0]),
+            )
+            rows = {r[0]: {"kcal": int(r[1]), "protein": round(r[2])} for r in cur.fetchall()}
+
+    daily = [rows.get(d, {"kcal": 0, "protein": 0}) for d in days]
+    days_with_data = [d for d in daily if d["kcal"] > 0]
+    logged_days = len(days_with_data)
+
+    avg_kcal = round(sum(d["kcal"] for d in days_with_data) / logged_days) if logged_days else 0
+    avg_protein = round(sum(d["protein"] for d in days_with_data) / logged_days) if logged_days else 0
+    best_day_kcal = max((d["kcal"] for d in daily), default=0)
+    consistency = round(logged_days / 7 * 100)
+
+    return {
+        "logged_days": logged_days,
+        "avg_kcal": avg_kcal,
+        "avg_protein": avg_protein,
+        "best_day_kcal": best_day_kcal,
+        "consistency": consistency,
+        "daily": daily,
+        "dates": days,
+    }
+
+
+# ── Weight logs ────────────────────────────────────────────────────────────
+
+
+def add_weight_log(telegram_id, weight_kg):
+    now = datetime.utcnow()
+    today = now.strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO weight_logs (telegram_id, weight_kg, logged_at, date) VALUES (%s, %s, %s, %s)",
+                (telegram_id, weight_kg, now.isoformat(), today),
+            )
+            cur.execute(
+                "UPDATE users SET weight_kg=%s WHERE telegram_id=%s",
+                (weight_kg, telegram_id),
+            )
+        conn.commit()
+
+
+def get_weight_history(telegram_id, days=14):
+    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT date, weight_kg FROM weight_logs
+                   WHERE telegram_id=%s AND date >= %s
+                   ORDER BY date ASC""",
+                (telegram_id, cutoff),
+            )
+            return cur.fetchall()
+
+
+# ── Global stats ────────────────────────────────────────────────────────────
+
+
 def get_total_stats():
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -216,6 +435,12 @@ def get_total_stats():
             total_a = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM referrals WHERE paid=1")
             ref_paid = cur.fetchone()[0]
+            week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+            cur.execute(
+                "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date >= %s",
+                (week_ago,),
+            )
+            wau = cur.fetchone()[0]
             return {
                 "total_users": total,
                 "pending": pending,
@@ -225,7 +450,11 @@ def get_total_stats():
                 "analyses_today": today_a,
                 "analyses_total": total_a,
                 "referrals_paid": ref_paid,
+                "wau": wau,
             }
+
+
+# ── Referrals ──────────────────────────────────────────────────────────────
 
 
 def register_referral(referrer_id, referee_id):
