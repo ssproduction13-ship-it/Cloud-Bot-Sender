@@ -4,9 +4,11 @@ import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
 from psycopg2.pool import ThreadedConnectionPool
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+
+_utcnow = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
 
 _pool: ThreadedConnectionPool | None = None
 
@@ -84,15 +86,15 @@ def init_db():
                 );
 
                 CREATE TABLE IF NOT EXISTS water_logs (
-                      id          SERIAL PRIMARY KEY,
-                      telegram_id BIGINT,
-                      glasses     INTEGER DEFAULT 0,
-                      date        TEXT DEFAULT (CURRENT_DATE::TEXT),
-                      updated_at  TEXT DEFAULT (NOW()::TEXT),
-                      UNIQUE(telegram_id, date)
-                  );
+                    id          SERIAL PRIMARY KEY,
+                    telegram_id BIGINT,
+                    glasses     INTEGER DEFAULT 0,
+                    date        TEXT DEFAULT (CURRENT_DATE::TEXT),
+                    updated_at  TEXT DEFAULT (NOW()::TEXT),
+                    UNIQUE(telegram_id, date)
+                );
 
-                                  CREATE TABLE IF NOT EXISTS onboard_state (
+                CREATE TABLE IF NOT EXISTS onboard_state (
                     telegram_id BIGINT PRIMARY KEY,
                     state       TEXT NOT NULL,
                     data_json   TEXT DEFAULT '{}',
@@ -170,7 +172,7 @@ def set_status(telegram_id, status):
         conn.commit()
 
 def approve_user(telegram_id, trial_days=3):
-    expires = (datetime.utcnow() + timedelta(days=trial_days)).isoformat()
+    expires = (_utcnow() + timedelta(days=trial_days)).isoformat()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -184,7 +186,7 @@ def is_trial_expired(user_or_id) -> bool:
     user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
     if not user or not user.get("trial_expires_at"):
         return True
-    return datetime.utcnow() > datetime.fromisoformat(user["trial_expires_at"])
+    return _utcnow() > datetime.fromisoformat(user["trial_expires_at"])
 
 def set_daily_goal(telegram_id, goal, protein_goal=None, goal_type=None,
                    weight_kg=None, height_cm=None, age=None, gender=None):
@@ -261,7 +263,7 @@ def save_onboard_state(telegram_id: int, state: str, data: dict) -> None:
                         updated_at = EXCLUDED.updated_at
                 """,
                 (telegram_id, state, json.dumps(data, default=str),
-                 datetime.utcnow().isoformat()),
+                 _utcnow().isoformat()),
             )
         conn.commit()
 
@@ -279,7 +281,7 @@ def load_onboard_state(telegram_id: int) -> dict | None:
     state, data_json, updated_at = row
     try:
         ts = datetime.fromisoformat(updated_at)
-        if (datetime.utcnow() - ts).total_seconds() > 86400:
+        if (_utcnow() - ts).total_seconds() > 86400:
             return None
     except Exception:
         pass
@@ -298,7 +300,7 @@ def clear_onboard_state(telegram_id: int) -> None:
 
 def activate_subscription(telegram_id, days):
     user = get_user(telegram_id)
-    now = datetime.utcnow()
+    now = _utcnow()
     if user and user.get("expires_at"):
         try:
             current_exp = datetime.fromisoformat(user["expires_at"])
@@ -321,7 +323,7 @@ def check_subscription_expired(user_or_id) -> bool:
     user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
     if not user or not user.get("expires_at"):
         return True
-    return datetime.utcnow() > datetime.fromisoformat(user["expires_at"])
+    return _utcnow() > datetime.fromisoformat(user["expires_at"])
 
 def get_all_users(status_filter=None):
     with get_conn() as conn:
@@ -336,7 +338,7 @@ def get_all_users(status_filter=None):
             return [dict(r) for r in cur.fetchall()]
 
 def get_active_users():
-    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    week_ago = (_utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -354,8 +356,8 @@ def get_active_users():
 
 def update_streak(telegram_id, user=None) -> tuple[int, bool]:
     """Pass pre-fetched user dict to avoid an extra DB round-trip."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
+    yesterday = (_utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     if user is None:
         user = get_user(telegram_id)
@@ -393,7 +395,7 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
 
 def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
                  food_name=None, meal_type="other") -> int:
-    now = datetime.utcnow()
+    now = _utcnow()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -417,7 +419,7 @@ def update_entry_calories(entry_id: int, new_kcal: int):
         conn.commit()
 
 def get_daily_usage(telegram_id):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -427,7 +429,7 @@ def get_daily_usage(telegram_id):
             return cur.fetchone()[0]
 
 def get_daily_macros(telegram_id):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -447,7 +449,7 @@ def get_daily_macros(telegram_id):
             }
 
 def get_entries_today(telegram_id):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -467,7 +469,7 @@ def delete_entry(entry_id: int):
 
 def reset_today_entries(telegram_id: int):
     """Delete all usage entries for today for a given user."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -488,7 +490,7 @@ def get_calories_for_date(telegram_id, date_str):
 # ── Weekly stats ───────────────────────────────────────────────────────────
 
 def get_weekly_stats(telegram_id):
-    today = datetime.utcnow().date()
+    today = _utcnow().date()
     days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
 
     with get_conn() as conn:
@@ -526,7 +528,7 @@ def get_weekly_stats(telegram_id):
 # ── Weight logs ────────────────────────────────────────────────────────────
 
 def add_weight_log(telegram_id, weight_kg):
-    now = datetime.utcnow()
+    now = _utcnow()
     today = now.strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -542,7 +544,7 @@ def add_weight_log(telegram_id, weight_kg):
         conn.commit()
 
 def get_weight_history(telegram_id, days=14):
-    cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+    cutoff = (_utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -556,11 +558,10 @@ def get_weight_history(telegram_id, days=14):
 # ── Global stats ────────────────────────────────────────────────────────────
 
 def get_total_stats():
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
-    yesterday_str = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-    day7_str = yesterday_str  # D7: registered 7 days ago
-    day7_str = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    today_str = _utcnow().strftime("%Y-%m-%d")
+    yesterday_str = (_utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    week_ago = (_utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    day7_str = (_utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -697,7 +698,7 @@ def get_referral_stats(telegram_id):
 
 def get_expiring_users(days_ahead: int) -> list:
     """Return paid users whose subscription expires in exactly days_ahead days."""
-    target_date = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    target_date = (_utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -712,7 +713,7 @@ def get_expiring_users(days_ahead: int) -> list:
 
 def get_winback_users() -> list:
     """Return paid users whose subscription expired exactly 3 days ago."""
-    target_date = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d")
+    target_date = (_utcnow() - timedelta(days=3)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -727,7 +728,7 @@ def get_winback_users() -> list:
 
 def get_streak_users_no_log_today() -> list:
     """Return active users with streak > 0 who have no entries today."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -749,7 +750,7 @@ def get_streak_users_no_log_today() -> list:
 
 def add_water_log(telegram_id: int) -> int:
     """Add one glass of water for today; return total glasses today."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -759,7 +760,7 @@ def add_water_log(telegram_id: int) -> int:
                    DO UPDATE SET glasses    = water_logs.glasses + 1,
                                  updated_at = EXCLUDED.updated_at
                    RETURNING glasses""",
-                (telegram_id, today, datetime.utcnow().isoformat()),
+                (telegram_id, today, _utcnow().isoformat()),
             )
             result = cur.fetchone()
         conn.commit()
@@ -767,7 +768,7 @@ def add_water_log(telegram_id: int) -> int:
 
 
 def reset_water_today(telegram_id: int) -> None:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -778,7 +779,7 @@ def reset_water_today(telegram_id: int) -> None:
 
 
 def get_water_today(telegram_id: int) -> int:
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = _utcnow().strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -800,7 +801,7 @@ def get_users_by_segment(segment: str) -> list:
       'no_log_week'  — no usage records in last 7 days
       'paid_active'  — status=paid, subscription active
     """
-    now = datetime.utcnow()
+    now = _utcnow()
     today = now.strftime("%Y-%m-%d")
     week_ago = (now - timedelta(days=7)).strftime("%Y-%m-%d")
     with get_conn() as conn:
