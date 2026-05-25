@@ -957,6 +957,27 @@ async def main():
             reply_markup=main_keyboard(uid == ADMIN_ID),
         )
 
+    # ── /restart_all (admin only) ──────────────────────────────────────────
+    @dp.message(Command("restart_all"))
+    async def cmd_restart_all(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        users = get_active_users()
+        sent = failed = 0
+        for u in users:
+            try:
+                await bot.send_message(
+                    u["telegram_id"],
+                    "🔄 *Бот обновлён!*\n\nЕсть новые функции — нажми любую кнопку ниже 👇",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard(u["telegram_id"] == ADMIN_ID),
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await message.answer(f"✅ Разослано: {sent}, не доставлено: {failed}")
+
     # ── /admin ────────────────────────────────────────────────────────────────
     @dp.message(Command("cleargoals"))
     async def cmd_cleargoals(message: Message):
