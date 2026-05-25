@@ -906,17 +906,20 @@ async def send_expiry_reminders(bot: Bot):
                 exp_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d.%m.%Y")
             except Exception:
                 exp_fmt = exp
+            when = "завтра" if days_left == 1 else "через 3 дня"
             msg = (
-                f"⏰ *{name}, подписка истекает {'завтра' if days_left == 1 else 'через 3 дня'}!*\n\n"
+                f"⏰ *{name}, подписка истекает {when}!*\n\n"
                 f"📅 Дата окончания: *{exp_fmt}*\n\n"
-                f"Продли сейчас — не потеряй стрик и историю питания 🔥"
+                f"Продли сейчас — дни добавятся к текущей подписке, стрик и история сохранятся 🔥\n\n"
+                f"💡 Выбери тариф:\n"
+                f"• 1 мес — 150 ⭐ (~7 ₽/день)\n"
+                f"• 3 мес — 360 ⭐ (~6 ₽/день) 🔥\n"
+                f"• 12 мес — 990 ⭐ (~4 ₽/день) 🏆"
             )
             try:
                 await bot.send_message(
                     uid, msg, parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="⭐ Продлить подписку", callback_data="show_premium")],
-                    ]),
+                    reply_markup=premium_keyboard(),
                 )
             except Exception as e:
                 log.debug(f"expiry reminder {uid}: {e}")
