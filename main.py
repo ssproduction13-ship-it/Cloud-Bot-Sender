@@ -736,35 +736,35 @@ async def _deliver_analysis(
             await message.answer(fun)
 
     # AI nutrition advice for premium users
-      if (not check_subscription_expired(uid)) and user.get("status") == "paid":
-          try:
-              goal = user.get("daily_goal")
-              goal_protein = user.get("protein_goal")
-              macros_now = get_daily_macros(uid)
-              advice_prompt = (
-                  f"Пользователь только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
-                  f"Дневной итог: {macros_now['kcal']} ккал"
-                  + (f" из {goal}" if goal else "")
-                  + f", белок {macros_now['protein']}г"
-                  + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
-                  "Дай ОДИН конкретный совет (1-2 предложения) что съесть следующим приёмом пищи "
-                  "для баланса КБЖУ. Без воды, только практика. Один эмодзи."
-              )
-              advice_resp = await openai_client.chat.completions.create(
-                  model="meta-llama/llama-4-scout-17b-16e-instruct",
-                  messages=[
-                      {"role": "system", "content": "Краткий нутрициолог. Только конкретные советы."},
-                      {"role": "user", "content": advice_prompt},
-                  ],
-                  max_tokens=120,
-              )
-              advice_text = advice_resp.choices[0].message.content or ""
-              if advice_text.strip():
-                  await message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
-          except Exception as adv_e:
-              log.debug(f"ai advice error: {adv_e}")
+    if (not check_subscription_expired(uid)) and user.get("status") == "paid":
+        try:
+            goal = user.get("daily_goal")
+            goal_protein = user.get("protein_goal")
+            macros_now = get_daily_macros(uid)
+            advice_prompt = (
+                f"Пользователь только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
+                f"Дневной итог: {macros_now['kcal']} ккал"
+                + (f" из {goal}" if goal else "")
+                + f", белок {macros_now['protein']}г"
+                + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
+                "Дай ОДИН конкретный совет (1-2 предложения) что съесть следующим приёмом пищи "
+                "для баланса КБЖУ. Без воды, только практика. Один эмодзи."
+            )
+            advice_resp = await openai_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {"role": "system", "content": "Краткий нутрициолог. Только конкретные советы."},
+                    {"role": "user", "content": advice_prompt},
+                ],
+                max_tokens=120,
+            )
+            advice_text = advice_resp.choices[0].message.content or ""
+            if advice_text.strip():
+                await message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
+        except Exception as adv_e:
+            log.debug(f"ai advice error: {adv_e}")
 
-  
+
     if milestone and streak in STREAK_MILESTONES:
         await message.answer(
             f"🎉 *Ачивка разблокирована!*\n"
