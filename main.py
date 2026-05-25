@@ -136,10 +136,10 @@ def _set_state(uid: int, state: str, data: dict | None = None):
 
 # ── Кнопки меню ──────────────────────────────────────────────────────────────
 BTN_PHOTO    = "📸 Анализ фото"
-BTN_MANUAL   = "✍️ Ввести вручную"
+BTN_MANUAL   = "✍️ Вручную"
 BTN_PROGRESS = "📊 Мой прогресс"
-BTN_SUB      = "⭐ Подписка"
-BTN_REF      = "👥 Пригласить друга"
+BTN_SUB      = "⭐ Premium"
+BTN_REF      = "🎁 Бонусы"
 BTN_PROFILE  = "⚙️ Профиль"
 BTN_ADMIN    = "🛠 Админка"
 
@@ -155,8 +155,6 @@ def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
         [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
     ]
-    if is_admin:
-        rows.append([KeyboardButton(text=BTN_ADMIN)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -341,8 +339,36 @@ def calc_daily_score(kcal: int, protein: float, fat: float, carbs: float,
 def score_emoji(score: int) -> str:
     if score >= 85: return "🔥"
     if score >= 70: return "✅"
-    if score >= 50: return "📊"
+    if score >= 50: return "🌱"
     return "💤"
+
+
+def format_score(score_100: int) -> float:
+    """Convert 0-100 score to 5.0-10.0 display scale (never below 5.0)."""
+    return max(round(score_100 / 10, 1), 5.0)
+
+
+def ai_score_comment(score_100: int, protein: float, carbs: float, kcal: int,
+                     goal_kcal: int | None, food_name: str | None) -> str:
+    """Return a short friendly AI-coach comment based on the day's nutrition."""
+    fn = (food_name or "").lower()
+    cheat = any(k in fn for k in ["бургер","пицца","чипсы","фри","kfc","mcdonald","нагетсы"])
+    sugar = any(k in fn for k in ["сахар","конфеты","торт","пирожное","кола","газировка"])
+    if score_100 >= 85:
+        return "Отличный день — так и держи! 💪"
+    if cheat:
+        return "Чит-мил? Раз в неделю — это нормально 😄 Завтра вернёмся в ритм."
+    if sugar:
+        return "Многовато сахара, но по калориям всё ок 👌 Запей водой."
+    if protein > 0 and protein < 60:
+        return "Белка чуть маловато — добавь яйца, творог или курицу 🥩"
+    if goal_kcal and kcal > goal_kcal * 1.2:
+        return "Немного перебор сегодня — завтра чуть полегче, всё выровняется 👍"
+    if goal_kcal and kcal < goal_kcal * 0.7:
+        return "Маловато калорий — не голодай, это замедляет прогресс 🙏"
+    if score_100 >= 70:
+        return "Хороший выбор. Главное — стабильность, а не идеальность 🌱"
+    return "Держишь курс — продолжай, всё идёт как надо 🔥"
 
 
 def detect_fun_reaction(food_name_lower: str, kcal: int | None) -> str | None:
@@ -420,30 +446,29 @@ def daily_progress_text(uid: int, user: dict | None = None,
     meals = get_daily_usage(uid)
 
     streak_line = (
-        f"\n{streak_emoji(streak)} Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
+        f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
         if streak > 0 else ""
     )
 
     score = calc_daily_score(total, macros["protein"], macros["fat"], macros["carbs"],
                              goal, goal_protein, meals)
-    score_line = f"\n{score_emoji(score)} Питание сегодня: *{score}/100*" if total > 0 else ""
-
-    if not goal:
-        return f"\n\n📊 *Сегодня:* {total} ккал{score_line}{streak_line}"
-
-    remaining = max(goal - total, 0)
-    bar = progress_bar(total, goal)
-    over = total - goal
-    extra = f"⚠️ Превышение на {over} ккал" if over > 0 else f"Осталось: {remaining} ккал"
+    fs = format_score(score)
+    score_line = f"\n{score_emoji(score)} Оценка питания: *{fs}/10*" if total > 0 else ""
 
     protein_line = ""
     if macros["protein"] > 0:
-        protein_line = f"\nБ {macros['protein']}г  Ж {macros['fat']}г  У {macros['carbs']}г"
+        protein_line = f"\n🥩 Б {macros['protein']}г  Ж {macros['fat']}г  У {macros['carbs']}г"
+
+    if not goal:
+        return f"\n\n🍽 *{total} ккал* сегодня{protein_line}{score_line}{streak_line}"
+
+    remaining = max(goal - total, 0)
+    over = total - goal
+    status_line = f"\n⚡ +{over} ккал сверх нормы" if over > 0 else f"\n✨ Ещё {remaining} ккал до нормы"
 
     return (
-        f"\n\n📊 *Сегодня:* {total} / {goal} ккал\n"
-        f"{bar}\n"
-        f"{extra}{protein_line}"
+        f"\n\n🍽 *{total} / {goal} ккал*"
+        f"{status_line}{protein_line}"
         f"{score_line}{streak_line}"
     )
 
@@ -684,18 +709,22 @@ async def send_evening_summaries(bot: Bot):
             else:
                 result_line = ""
 
-            protein_line = f"\n💪 Белок: {macros['protein']}г" if macros["protein"] > 0 else ""
-            streak_line = f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*!" if streak > 0 else ""
-            score_line = f"\n{score_emoji(score)} Оценка дня: *{score}/100*"
+            fs = format_score(score)
+            comment = ai_score_comment(score, macros["protein"], macros["carbs"], total, goal, None)
+            streak_line = (
+                f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}* — не останавливайся!"
+                if streak > 0 else ""
+            )
+            protein_line = f"\n🥩 Белок: *{macros['protein']}г*" if macros["protein"] > 0 else ""
 
             await bot.send_message(
                 uid,
                 f"🌙 *Итоги дня*\n\n"
-                f"🔥 Калории: *{total}*"
-                f"{f' / {goal}' if goal else ''} ккал\n"
-                f"{protein_line}\n"
-                f"{result_line}"
-                f"{score_line}{streak_line}",
+                f"🍽 *{total}{f' / {goal}' if goal else ''} ккал*\n"
+                f"{result_line}{protein_line}"
+                f"{streak_line}\n\n"
+                f"{score_emoji(score)} Оценка: *{fs}/10*\n"
+                f"💬 _{comment}_",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -712,26 +741,34 @@ async def send_weekly_reports(bot: Bot):
             if stats["logged_days"] < 2:
                 continue
 
-            consistency_icon = (
-                "🔥" if stats["consistency"] >= 80
-                else "📊" if stats["consistency"] >= 50
-                else "💤"
-            )
             goal = user.get("daily_goal", 0)
-            avg_vs_goal = ""
-            if goal and stats["avg_kcal"]:
-                diff = stats["avg_kcal"] - goal
-                avg_vs_goal = f" ({'➕' if diff > 0 else '➖'}{abs(diff)} от нормы)"
+            avg_kcal = stats["avg_kcal"] or 0
+            avg_protein = stats["avg_protein"] or 0
+            logged = stats["logged_days"]
+
+            forecast_line = ""
+            if goal and avg_kcal > 0:
+                diff = avg_kcal - goal
+                if abs(diff) > 50:
+                    kg_week = round(diff * 7 / 7700, 1)
+                    sign = "+" if kg_week > 0 else ""
+                    forecast_line = f"\n📉 Прогноз: *{sign}{kg_week} кг/нед.*"
+
+            if logged >= 6:
+                insight = "🔥 Отличная неделя — так держать!"
+            elif logged >= 4:
+                insight = "💪 Хорошая неделя — ещё немного стабильности!"
+            else:
+                insight = "🌱 Попробуй логировать каждый день — разница заметна!"
 
             await bot.send_message(
                 uid,
                 f"📊 *Итоги недели*\n\n"
-                f"🍽 Дней с записями: *{stats['logged_days']}/7*\n"
-                f"🔥 Среднее: *{stats['avg_kcal']} ккал*{avg_vs_goal}\n"
-                f"💪 Средний белок: *{stats['avg_protein']}г*\n"
-                f"🏆 Лучший день: *{stats['best_day_kcal']} ккал*\n"
-                f"{consistency_icon} Постоянство: *{stats['consistency']}%*\n\n"
-                f"{'🔥 Отличная неделя — так держать!' if stats['consistency'] >= 80 else '💪 Логируй каждый день — это ключ к результату!'}",
+                f"🍽 Среднее: *{avg_kcal} ккал/день*\n"
+                f"🥩 Белок: *{avg_protein} г/день*\n"
+                f"📅 Дней с записями: *{logged}/7*"
+                f"{forecast_line}\n\n"
+                f"💡 {insight}",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -1453,25 +1490,50 @@ async def main():
         await callback.answer()
         stats = get_weekly_stats(uid)
         if stats["logged_days"] == 0:
-            await callback.message.answer("📊 Записей за неделю пока нет. Начни сегодня 💪")
+            await callback.message.answer("📊 *Ещё нет данных за неделю*\n\nНачни сегодня — и через 7 дней увидишь свой прогресс 💪", parse_mode="Markdown")
             return
 
-        lines = ["📅 *Последние 7 дней:*\n"]
+        user = get_user(uid)
+        goal = user.get("daily_goal") if user else None
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        for i, (d, data) in enumerate(zip(stats["dates"], stats["daily"])):
+        day_lines = []
+        for d, data in zip(stats["dates"], stats["daily"]):
             dt = datetime.strptime(d, "%Y-%m-%d")
             dn = day_names[dt.weekday()]
             if data["kcal"] > 0:
-                bar = "█" * min(int(data["kcal"] / 200), 10)
-                lines.append(f"{dn} {d[5:]} {bar} {data['kcal']} ккал")
+                day_lines.append(f"  {dn} — {data['kcal']} ккал")
             else:
-                lines.append(f"{dn} {d[5:]} ░░░░░░░░░░ —")
+                day_lines.append(f"  {dn} — нет записей")
+        days_block = "\n".join(day_lines)
 
-        ci = "🔥" if stats["consistency"] >= 80 else "📊" if stats["consistency"] >= 50 else "💤"
-        lines.append(f"\n{ci} Постоянство: *{stats['consistency']}%*")
-        lines.append(f"🔥 Среднее: *{stats['avg_kcal']} ккал*")
-        lines.append(f"💪 Средний белок: *{stats['avg_protein']}г*")
-        await callback.message.answer("\n".join(lines), parse_mode="Markdown")
+        avg_kcal = stats["avg_kcal"] or 0
+        avg_protein = stats["avg_protein"] or 0
+        logged = stats["logged_days"]
+
+        forecast_line = ""
+        if goal and avg_kcal > 0:
+            diff = avg_kcal - goal
+            if abs(diff) > 50:
+                kg_week = round(diff * 7 / 7700, 1)
+                sign = "+" if kg_week > 0 else ""
+                forecast_line = f"\n📉 Прогноз: *{sign}{kg_week} кг/нед.*"
+
+        if logged >= 5:
+            insight = "🔥 Стабильная неделя — отличная работа!"
+        elif logged >= 3:
+            insight = "💪 Хороший старт — логируй каждый день."
+        else:
+            insight = "🌱 Ещё немного практики — и привычка закрепится!"
+
+        text_out = (
+            f"📊 *Последние 7 дней*\n\n"
+            f"{days_block}\n\n"
+            f"🍽 Среднее: *{avg_kcal} ккал*\n"
+            f"🥩 Белок: *{avg_protein} г/день*"
+            f"{forecast_line}\n\n"
+            f"💡 {insight}"
+        )
+        await callback.message.answer(text_out, parse_mode="Markdown")
 
     @dp.callback_query(F.data == "profile_status")
     async def cb_profile_status(callback: CallbackQuery):
@@ -1703,38 +1765,47 @@ async def main():
             goal = user["daily_goal"]
             goal_protein = user.get("protein_goal")
             streak = user.get("streak_days", 0)
-            streak_line = (
-                f"\n{streak_emoji(streak)} Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
-                if streak > 0 else ""
-            )
             score = calc_daily_score(total, macros["protein"], macros["fat"],
                                      macros["carbs"], goal, goal_protein, meals)
-            score_line = f"\n{score_emoji(score)} Питание сегодня: *{score}/100*" if total > 0 else ""
+            fs = format_score(score)
 
-            macros_line = ""
-            if macros["protein"] > 0:
-                macros_line = f"\n💪 Б: {macros['protein']}г  Ж: {macros['fat']}г  У: {macros['carbs']}г"
+            streak_line = (
+                f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
+                if streak > 0 else ""
+            )
+            macros_line = (
+                f"\n🥩 Б: *{macros['protein']}г*  Ж: *{macros['fat']}г*  У: *{macros['carbs']}г*"
+                if macros["protein"] > 0 else ""
+            )
+            comment = ai_score_comment(score, macros["protein"], macros["carbs"],
+                                       total, goal, None) if total > 0 else ""
+            score_line = f"\n\n{score_emoji(score)} Оценка питания: *{fs}/10*" if total > 0 else ""
+            comment_line = f"\n💬 _{comment}_" if comment else ""
 
             if goal:
                 remaining = max(goal - total, 0)
-                bar = progress_bar(total, goal)
                 over = total - goal
-                extra = f"⚠️ Превышение на {over} ккал" if over > 0 else f"Осталось: {remaining} ккал"
+                if over > 0:
+                    status = f"⚡ *+{over} ккал* сверх нормы"
+                else:
+                    pct = round(total / goal * 100)
+                    status = f"✨ Выполнено *{pct}%* — ещё {remaining} ккал"
                 text_out = (
-                    f"📊 *Сегодня*\n\n"
-                    f"🔥 {total} / {goal} ккал\n"
-                    f"{bar}\n"
-                    f"{extra}{macros_line}\n"
-                    f"🍽 Приёмов: {meals}"
-                    f"{score_line}{streak_line}"
+                    f"📊 *Мой прогресс*\n\n"
+                    f"🍽 Сегодня: *{total} / {goal} ккал*\n"
+                    f"{status}\n"
+                    f"🍴 Приёмов: {meals}{macros_line}"
+                    f"{streak_line}"
+                    f"{score_line}{comment_line}"
                 )
             else:
                 text_out = (
-                    f"📊 *Сегодня*\n\n"
-                    f"🔥 Съедено: {total} ккал{macros_line}\n"
-                    f"🍽 Приёмов: {meals}"
-                    f"{score_line}{streak_line}\n\n"
-                    f"_Установи норму в ⚙️ Профиль_"
+                    f"📊 *Мой прогресс*\n\n"
+                    f"🍽 Сегодня: *{total} ккал*\n"
+                    f"🍴 Приёмов: {meals}{macros_line}"
+                    f"{streak_line}"
+                    f"{score_line}{comment_line}"
+                    f"\n\n_💡 Установи цель в ⚙️ Профиль_"
                 )
             await message.answer(text_out, parse_mode="Markdown")
             return
@@ -1812,7 +1883,7 @@ async def main():
             "• Недельные отчёты 📊\n"
             "• Трекер веса и прогресс\n"
             "• Стрики и ачивки 🔥\n"
-            "• Оценка питания /100\n"
+            "• Оценка питания /10\n"
             "━━━━━━━━━━━━━━━━\n\n"
             "1 месяц = примерно *5 ₽/день*",
             parse_mode="Markdown",
