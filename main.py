@@ -561,16 +561,18 @@ def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
 
 
 def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
-    """Inline keyboard listing today's entries — calories + edit + delete."""
+    """Inline keyboard listing today's entries — name + calories + edit + delete."""
     rows = []
     for i, e in enumerate(entries, 1):
         kcal = e["calories"] or 0
+        name = (e.get("food_name") or "блюдо").strip()
+        label = f"{i}. {name[:24]} — {kcal} ккал" if len(name) <= 24 else f"{i}. {name[:22]}… — {kcal} ккал"
         rows.append([
-            InlineKeyboardButton(text=f"{i}. {kcal} ккал", callback_data="noop"),
+            InlineKeyboardButton(text=label, callback_data="noop"),
             InlineKeyboardButton(text="✏️", callback_data=f"edit_e:{e['id']}"),
             InlineKeyboardButton(text="🗑", callback_data=f"del_e:{e['id']}"),
         ])
-    rows.append([InlineKeyboardButton(text="🗑 Сбросить весь день", callback_data="reset_day")])
+    rows.append([InlineKeyboardButton(text="Сбросить весь день", callback_data="reset_day")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1809,14 +1811,25 @@ async def main():
         entries = get_entries_today(uid)
         if not entries:
             await send_fn(
-                "📋 *Записей сегодня нет*\n\nОтправь фото или опиши блюдо — добавлю в дневник 🍽",
+                "*Записей сегодня нет*\n\nОтправь фото или опиши блюдо — добавлю в дневник",
                 parse_mode="Markdown",
             )
             return
         total = sum(e["calories"] or 0 for e in entries)
-        header = f"📋 *Дневник за сегодня* — {total} ккал\n\n"
-        header += "_Нажми запись чтобы изменить ккал, 🗑 — удалить_"
-        await send_fn(header, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
+        lines = []
+        for i, e in enumerate(entries, 1):
+            name = (e.get("food_name") or "блюдо").strip()
+            kcal = e["calories"] or 0
+            p = round(e.get("protein_g") or 0)
+            f = round(e.get("fat_g") or 0)
+            c = round(e.get("carbs_g") or 0)
+            macro = f"Б {p}г  Ж {f}г  У {c}г" if (p or f or c) else ""
+            entry_line = f"{i}. *{name}* — {kcal} ккал"
+            if macro:
+                entry_line += f"\n    _{macro}_"
+            lines.append(entry_line)
+        text = f"*Дневник — {total} ккал*\n\n" + "\n".join(lines)
+        await send_fn(text, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
 
     @dp.callback_query(F.data == "noop")
     async def cb_noop(callback: CallbackQuery):
