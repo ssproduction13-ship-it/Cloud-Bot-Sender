@@ -237,7 +237,24 @@ def mark_onboarded(telegram_id):
         conn.commit()
 
 
-# ── Onboarding persistent state ─────────────────────────────────────────────
+
+
+  def set_user_goals(telegram_id, *, daily_goal, protein_goal, weight_kg,
+                     height_cm, age, gender, goal_type):
+      """Save calculated onboarding goals to the users table."""
+      with get_conn() as conn:
+          with conn.cursor() as cur:
+              cur.execute(
+                  """UPDATE users
+                     SET daily_goal=%s, protein_goal=%s, weight_kg=%s,
+                         height_cm=%s, age=%s, gender=%s, goal_type=%s
+                     WHERE telegram_id=%s""",
+                  (daily_goal, protein_goal, weight_kg,
+                   height_cm, age, gender, goal_type, telegram_id),
+              )
+          conn.commit()
+
+  # ── Onboarding persistent state ─────────────────────────────────────────────
 
 def save_onboard_state(telegram_id: int, state: str, data: dict) -> None:
     """Persist onboarding FSM state so it survives bot restarts."""
