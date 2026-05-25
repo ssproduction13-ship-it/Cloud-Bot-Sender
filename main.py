@@ -1816,20 +1816,11 @@ async def main():
             )
             return
         total = sum(e["calories"] or 0 for e in entries)
-        lines = []
-        for i, e in enumerate(entries, 1):
-            name = (e.get("food_name") or "блюдо").strip()
-            kcal = e["calories"] or 0
-            p = round(e.get("protein_g") or 0)
-            f = round(e.get("fat_g") or 0)
-            c = round(e.get("carbs_g") or 0)
-            macro = f"Б {p}г  Ж {f}г  У {c}г" if (p or f or c) else ""
-            entry_line = f"{i}. *{name}* — {kcal} ккал"
-            if macro:
-                entry_line += f"\n    _{macro}_"
-            lines.append(entry_line)
-        text = f"*Дневник — {total} ккал*\n\n" + "\n".join(lines)
-        await send_fn(text, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
+        await send_fn(
+            f"*Дневник — {total} ккал*",
+            parse_mode="Markdown",
+            reply_markup=diary_keyboard(entries),
+        )
 
     @dp.callback_query(F.data == "noop")
     async def cb_noop(callback: CallbackQuery):
