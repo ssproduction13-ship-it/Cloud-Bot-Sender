@@ -935,7 +935,6 @@ async def send_winback_messages(bot: Bot):
         name = (user.get("first_name") or "").split()[0] or "Привет"
         streak = user.get("streak_days", 0)
         streak_line = (
-        streak_line = (
             f"\n🔥 У тебя был стрик *{streak} дней* — не дай ему пропасть!"
             if streak > 2 else ""
         )
