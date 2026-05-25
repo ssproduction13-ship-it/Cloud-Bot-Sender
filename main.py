@@ -32,6 +32,7 @@ from db import (
     set_status,
     approve_user,
     is_trial_expired,
+    clear_all_goals,
     mark_onboarded,
     save_onboard_state,
     load_onboard_state,
@@ -920,6 +921,17 @@ async def main():
         )
 
     # ── /admin ────────────────────────────────────────────────────────────────
+    @dp.message(Command("cleargoals"))
+    async def cmd_cleargoals(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        count = clear_all_goals()
+        await message.answer(
+            f"✅ Готово. Очищено у *{count}* пользователей:\n"
+            f"daily\\_goal, protein\\_goal, goal\\_type, weight\\_kg, height\\_cm, age, gender",
+            parse_mode="Markdown",
+        )
+
     @dp.message(Command("admin"))
     async def cmd_admin(message: Message):
         if message.from_user.id != ADMIN_ID:
