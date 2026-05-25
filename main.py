@@ -2353,20 +2353,54 @@ async def main():
             goal_type  = d.get("goal_type") or (user.get("goal_type") if user else "track") or "track"
             is_onboard = bool(d.get("is_onboard", False))
 
-            gender_icon = "♂️" if gender == "m" else "♀️"
-            await message.answer(
-                f"✅ *{weight} кг, {int(height)} см, {age} лет, {gender_icon}*\n\n"
-                f"Последний шаг — выбери уровень активности:",
-                parse_mode="Markdown",
-                reply_markup=activity_keyboard(
-                    weight=weight,
-                    height=height,
-                    age=age,
-                    gender=gender,
-                    goal_type=goal_type,
-                    from_onboard=is_onboard,
-                ),
+            # Fixed activity multiplier — moderate (1.55), no selection needed
+            activity = 1.55
+            tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
+
+            set_daily_goal(
+                uid, tdee,
+                protein_goal=protein,
+                goal_type=goal_type,
+                weight_kg=weight,
+                height_cm=height,
+                age=age,
+                gender=gender,
             )
+            user_states.pop(uid, None)
+
+            if is_onboard:
+                mark_onboarded(uid)
+                try:
+                    clear_onboard_state(uid)
+                except Exception:
+                    pass
+
+            goal_labels = {
+                "lose":     "📉 Похудение",
+                "gain":     "📈 Набор массы",
+                "maintain": "⚖️ Поддержание",
+                "track":    "📊 Отслеживание",
+            }
+            goal_label = goal_labels.get(goal_type, "")
+            gender_icon = "♂️" if gender == "m" else "♀️"
+
+            result_text = (
+                f"🔥 *Готово! Норма рассчитана*\n\n"
+                f"{gender_icon} {weight} кг · {int(height)} см · {age} лет\n\n"
+                f"🎯 *{tdee} ккал* в день\n"
+                f"💪 *{protein} г белка*\n"
+                f"🏷 Цель: {goal_label}\n\n"
+                f"Теперь просто отправляй фото еды 📸"
+            ) if is_onboard else (
+                f"✅ *Норма обновлена!*\n\n"
+                f"{gender_icon} {weight} кг · {int(height)} см · {age} лет\n\n"
+                f"🎯 *{tdee} ккал* в день\n"
+                f"💪 Белок: *{protein} г*\n"
+                f"🏷 Цель: {goal_label}"
+            )
+
+            await message.answer(result_text, parse_mode="Markdown",
+                                 reply_markup=main_keyboard(uid == ADMIN_ID))
             return
 
         # ── Goal manual enter ──────────────────────────────────────────────────
