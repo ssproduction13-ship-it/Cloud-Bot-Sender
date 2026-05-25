@@ -119,6 +119,7 @@ def init_db():
                 ("fat_g",     "REAL"),
                 ("carbs_g",   "REAL"),
                 ("food_name", "TEXT"),
+                ("deleted",   "BOOLEAN DEFAULT FALSE"),
             ]
             for col, definition in new_usage_cols:
                 cur.execute(f"ALTER TABLE usage ADD COLUMN IF NOT EXISTS {col} {definition}")
@@ -424,7 +425,7 @@ def get_daily_macros(telegram_id):
                           COALESCE(SUM(protein_g),0),
                           COALESCE(SUM(fat_g),0),
                           COALESCE(SUM(carbs_g),0)
-                   FROM usage WHERE telegram_id=%s AND date=%s""",
+                   FROM usage WHERE telegram_id=%s AND date=%s AND (deleted IS NULL OR deleted=FALSE)""",
                 (telegram_id, today),
             )
             row = cur.fetchone()
@@ -441,7 +442,7 @@ def get_entries_today(telegram_id):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """SELECT id, food_name, calories, protein_g, fat_g, carbs_g, used_at
-                   FROM usage WHERE telegram_id=%s AND date=%s
+                   FROM usage WHERE telegram_id=%s AND date=%s AND (deleted IS NULL OR deleted=FALSE)
                    ORDER BY used_at ASC""",
                 (telegram_id, today),
             )
@@ -451,7 +452,7 @@ def delete_entry(entry_id: int):
     """Delete a single usage entry by id."""
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM usage WHERE id=%s", (entry_id,))
+            cur.execute("UPDATE usage SET deleted=TRUE WHERE id=%s", (entry_id,))
         conn.commit()
 
 def reset_today_entries(telegram_id: int):
@@ -469,7 +470,7 @@ def get_calories_for_date(telegram_id, date_str):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COALESCE(SUM(calories),0) FROM usage WHERE telegram_id=%s AND date=%s",
+                "SELECT COALESCE(SUM(calories),0) FROM usage WHERE telegram_id=%s AND date=%s AND (deleted IS NULL OR deleted=FALSE)",
                 (telegram_id, date_str),
             )
             return int(cur.fetchone()[0])
@@ -487,7 +488,7 @@ def get_weekly_stats(telegram_id):
                           COALESCE(SUM(calories),0) AS kcal,
                           COALESCE(SUM(protein_g),0) AS protein
                    FROM usage
-                   WHERE telegram_id=%s AND date >= %s
+                   WHERE telegram_id=%s AND date >= %s AND (deleted IS NULL OR deleted=FALSE)
                    GROUP BY date""",
                 (telegram_id, days[0]),
             )
