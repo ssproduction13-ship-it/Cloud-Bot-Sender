@@ -834,10 +834,11 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
-    scheduler.add_job(send_morning_checkins, "cron", hour=8,  minute=0, args=[bot])
-    scheduler.add_job(send_evening_summaries, "cron", hour=21, minute=0, args=[bot])
-    scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=9, minute=0, args=[bot])
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    # Tyumen = UTC+5: 08:00 → 03:00 UTC, 20:00 → 15:00 UTC, Mon 09:00 → Mon 04:00 UTC
+    scheduler.add_job(send_morning_checkins, "cron", hour=3,  minute=0, args=[bot])
+    scheduler.add_job(send_evening_summaries, "cron", hour=15, minute=0, args=[bot])
+    scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=4, minute=0, args=[bot])
     scheduler.start()
 
     # ── /start ────────────────────────────────────────────────────────────────
