@@ -624,32 +624,32 @@ def user_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
 
 
 async def start_onboarding(bot: Bot, uid: int, name: str):
-      try:
-          clear_onboard_state(uid)
-      except Exception:
-          pass
-      user_states.pop(uid, None)
-      safe_name = (name or "друг").split()[0]
-      await bot.send_message(
-          uid,
-          f"Привет, {safe_name}! U0001f44b\n\n"
-          f"Я — твой *персональный счётчик калорий*.\n"
-          f"Отправляй фото еды или описывай что съел — считаю КБЖУ U0001f4f8\n\n"
-          f"Давай за минуту настроим *дневную норму калорий* — "
-          f"это поможет точнее следить за прогрессом ⚡",
-          parse_mode="Markdown",
-      )
-      await bot.send_message(
-          uid,
-          "U0001f3af *Какова твоя цель?*",
-          parse_mode="Markdown",
-          reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-              [InlineKeyboardButton(text="U0001f525 Похудеть",       callback_data="ob_goal:lose")],
-              [InlineKeyboardButton(text="⚖️ Удержать вес",   callback_data="ob_goal:maintain")],
-              [InlineKeyboardButton(text="U0001f4aa Набрать массу",  callback_data="ob_goal:gain")],
-          ]),
-      )
-      _set_onboard_state(uid, "ob_goal", {"name": safe_name})
+    try:
+        clear_onboard_state(uid)
+    except Exception:
+        pass
+    user_states.pop(uid, None)
+    safe_name = (name or "друг").split()[0]
+    await bot.send_message(
+        uid,
+        f"Привет, {safe_name}! 👋\n\n"
+        f"Я — твой *персональный счётчик калорий*.\n"
+        f"Отправляй фото еды или описывай что съел — считаю КБЖУ 📸\n\n"
+        f"Давай за минуту настроим *дневную норму калорий* — "
+        f"это поможет точнее следить за прогрессом ⚡",
+        parse_mode="Markdown",
+    )
+    await bot.send_message(
+        uid,
+        "🎯 *Какова твоя цель?*",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔥 Похудеть",       callback_data="ob_goal:lose")],
+            [InlineKeyboardButton(text="⚖️ Удержать вес",   callback_data="ob_goal:maintain")],
+            [InlineKeyboardButton(text="💪 Набрать массу",  callback_data="ob_goal:gain")],
+        ]),
+    )
+    _set_onboard_state(uid, "ob_goal", {"name": safe_name})
 
 # ── Общий хелпер доставки результата анализа еды ─────────────────────────────
 
@@ -1681,62 +1681,62 @@ async def main():
         )
 
     # ── Photo handler ──────────────────────────────────────────────────────────
-      # ── Onboarding callbacks ─────────────────────────────────────────────────────
-      @dp.callback_query(F.data.startswith("ob_goal:"))
-      async def cb_ob_goal(callback: CallbackQuery):
-          uid = callback.from_user.id
-          goal_type = callback.data.split(":")[1]
-          await callback.answer()
-          current = _get_state(uid)
-          state_data = current.get("data", {})
-          state_data["goal_type"] = goal_type
-          goal_labels = {
-              "lose":     "U0001f525 Похудеть",
-              "maintain": "⚖️ Удержать вес",
-              "gain":     "U0001f4aa Набрать массу",
-          }
-          try:
-              await callback.message.edit_text(
-                  f"U0001f3af *Цель:* {goal_labels.get(goal_type, goal_type)} ✅",
-                  parse_mode="Markdown",
-              )
-          except Exception:
-              pass
-          await callback.message.answer(
-              "U0001f464 *Укажи свой пол:*",
-              parse_mode="Markdown",
-              reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                  InlineKeyboardButton(text="U0001f468 Мужской", callback_data="ob_gender:male"),
-                  InlineKeyboardButton(text="U0001f469 Женский", callback_data="ob_gender:female"),
-              ]]),
-          )
-          _set_onboard_state(uid, "ob_gender", state_data)
+    # ── Onboarding callbacks ─────────────────────────────────────────────────────
+    @dp.callback_query(F.data.startswith("ob_goal:"))
+    async def cb_ob_goal(callback: CallbackQuery):
+        uid = callback.from_user.id
+        goal_type = callback.data.split(":")[1]
+        await callback.answer()
+        current = _get_state(uid)
+        state_data = current.get("data", {})
+        state_data["goal_type"] = goal_type
+        goal_labels = {
+            "lose":     "🔥 Похудеть",
+            "maintain": "⚖️ Удержать вес",
+            "gain":     "💪 Набрать массу",
+        }
+        try:
+            await callback.message.edit_text(
+                f"🎯 *Цель:* {goal_labels.get(goal_type, goal_type)} ✅",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        await callback.message.answer(
+            "👤 *Укажи свой пол:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="👨 Мужской", callback_data="ob_gender:male"),
+                InlineKeyboardButton(text="👩 Женский", callback_data="ob_gender:female"),
+            ]]),
+        )
+        _set_onboard_state(uid, "ob_gender", state_data)
 
-      @dp.callback_query(F.data.startswith("ob_gender:"))
-      async def cb_ob_gender(callback: CallbackQuery):
-          uid = callback.from_user.id
-          gender = callback.data.split(":")[1]
-          await callback.answer()
-          current = _get_state(uid)
-          state_data = current.get("data", {})
-          state_data["gender"] = gender
-          gender_label = "U0001f468 Мужской" if gender == "male" else "U0001f469 Женский"
-          try:
-              await callback.message.edit_text(
-                  f"U0001f464 *Пол:* {gender_label} ✅",
-                  parse_mode="Markdown",
-              )
-          except Exception:
-              pass
-          await callback.message.answer(
-              "U0001f382 *Сколько тебе лет?*
+    @dp.callback_query(F.data.startswith("ob_gender:"))
+    async def cb_ob_gender(callback: CallbackQuery):
+        uid = callback.from_user.id
+        gender = callback.data.split(":")[1]
+        await callback.answer()
+        current = _get_state(uid)
+        state_data = current.get("data", {})
+        state_data["gender"] = gender
+        gender_label = "👨 Мужской" if gender == "male" else "👩 Женский"
+        try:
+            await callback.message.edit_text(
+                f"👤 *Пол:* {gender_label} ✅",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        await callback.message.answer(
+            "🎂 *Сколько тебе лет?*
 
 _Введи число (например: 25)_",
-              parse_mode="Markdown",
-          )
-          _set_onboard_state(uid, "ob_age", state_data)
+            parse_mode="Markdown",
+        )
+        _set_onboard_state(uid, "ob_age", state_data)
 
-  
+
     @dp.message(F.photo)
     async def handle_photo(message: Message):
         uid = message.from_user.id
@@ -2045,108 +2045,108 @@ _Введи число (например: 25)_",
         state_data = user_states.get(uid, {})
         state = state_data.get("state")
 
-        # ── Onboarding: age ────────────────────────────────────────────────────────
-          if state == "ob_age":
-              try:
-                  age = int(text.strip())
-                  if not (10 <= age <= 100):
-                      raise ValueError
-              except ValueError:
-                  await message.answer(
-                      "⚠️ Введи возраст числом от 10 до 100 или /cancel:"
-                  )
-                  return
-              ob_data = user_states.get(uid, {}).get("data", {})
-              ob_data["age"] = age
-              await message.answer(
-                  "U0001f4cf *Какой у тебя рост?*
+      # ── Onboarding: age ────────────────────────────────────────────────────────
+        if state == "ob_age":
+            try:
+                age = int(text.strip())
+                if not (10 <= age <= 100):
+                    raise ValueError
+            except ValueError:
+                await message.answer(
+                    "⚠️ Введи возраст числом от 10 до 100 или /cancel:"
+                )
+                return
+            ob_data = user_states.get(uid, {}).get("data", {})
+            ob_data["age"] = age
+            await message.answer(
+                "📏 *Какой у тебя рост?*
 
 _Введи в сантиметрах (например: 175)_",
-                  parse_mode="Markdown",
-              )
-              _set_onboard_state(uid, "ob_height", ob_data)
-              return
+                parse_mode="Markdown",
+            )
+            _set_onboard_state(uid, "ob_height", ob_data)
+            return
 
-          # ── Onboarding: height ─────────────────────────────────────────────────────
-          if state == "ob_height":
-              try:
-                  height = float(text.replace(",", "."))
-                  if not (100 <= height <= 250):
-                      raise ValueError
-              except ValueError:
-                  await message.answer(
-                      "⚠️ Введи рост в сантиметрах от 100 до 250 или /cancel:"
-                  )
-                  return
-              ob_data = user_states.get(uid, {}).get("data", {})
-              ob_data["height"] = height
-              await message.answer(
-                  "⚖️ *Какой у тебя вес?*
+        # ── Onboarding: height ─────────────────────────────────────────────────────
+        if state == "ob_height":
+            try:
+                height = float(text.replace(",", "."))
+                if not (100 <= height <= 250):
+                    raise ValueError
+            except ValueError:
+                await message.answer(
+                    "⚠️ Введи рост в сантиметрах от 100 до 250 или /cancel:"
+                )
+                return
+            ob_data = user_states.get(uid, {}).get("data", {})
+            ob_data["height"] = height
+            await message.answer(
+                "⚖️ *Какой у тебя вес?*
 
 _Введи в кг (например: 70 или 70.5)_",
-                  parse_mode="Markdown",
-              )
-              _set_onboard_state(uid, "ob_weight", ob_data)
-              return
+                parse_mode="Markdown",
+            )
+            _set_onboard_state(uid, "ob_weight", ob_data)
+            return
 
-          # ── Onboarding: weight -> calculate and complete ───────────────────────────
-          if state == "ob_weight":
-              try:
-                  weight = float(text.replace(",", "."))
-                  if not (30 <= weight <= 300):
-                      raise ValueError
-              except ValueError:
-                  await message.answer(
-                      "⚠️ Введи вес в кг от 30 до 300 или /cancel:"
-                  )
-                  return
-              ob_data = user_states.get(uid, {}).get("data", {})
-              goal_kcal, protein_goal = _calc_calorie_goal(
-                  ob_data.get("gender", "male"),
-                  ob_data.get("age", 25),
-                  ob_data.get("height", 170),
-                  weight,
-                  ob_data.get("goal_type", "maintain"),
-              )
-              set_user_goals(
-                  uid,
-                  daily_goal=goal_kcal,
-                  protein_goal=protein_goal,
-                  weight_kg=weight,
-                  height_cm=ob_data.get("height", 170),
-                  age=ob_data.get("age", 25),
-                  gender=ob_data.get("gender", "male"),
-                  goal_type=ob_data.get("goal_type", "maintain"),
-              )
-              mark_onboarded(uid)
-              try:
-                  clear_onboard_state(uid)
-              except Exception:
-                  pass
-              user_states.pop(uid, None)
-              goal_labels = {
-                  "lose":     "похудение",
-                  "maintain": "поддержание веса",
-                  "gain":     "набор массы",
-              }
-              goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
-              await message.answer(
-                  f"U0001f389 *Профиль настроен!*
-
-"
-                  f"U0001f3af Цель: *{goal_label}*
-"
-                  f"U0001f525 Норма калорий: *{goal_kcal} ккал/день*
-"
-                  f"U0001f969 Норма белка: *{protein_goal} г/день*
+        # ── Onboarding: weight -> calculate and complete ───────────────────────────
+        if state == "ob_weight":
+            try:
+                weight = float(text.replace(",", "."))
+                if not (30 <= weight <= 300):
+                    raise ValueError
+            except ValueError:
+                await message.answer(
+                    "⚠️ Введи вес в кг от 30 до 300 или /cancel:"
+                )
+                return
+            ob_data = user_states.get(uid, {}).get("data", {})
+            goal_kcal, protein_goal = _calc_calorie_goal(
+                ob_data.get("gender", "male"),
+                ob_data.get("age", 25),
+                ob_data.get("height", 170),
+                weight,
+                ob_data.get("goal_type", "maintain"),
+            )
+            set_user_goals(
+                uid,
+                daily_goal=goal_kcal,
+                protein_goal=protein_goal,
+                weight_kg=weight,
+                height_cm=ob_data.get("height", 170),
+                age=ob_data.get("age", 25),
+                gender=ob_data.get("gender", "male"),
+                goal_type=ob_data.get("goal_type", "maintain"),
+            )
+            mark_onboarded(uid)
+            try:
+                clear_onboard_state(uid)
+            except Exception:
+                pass
+            user_states.pop(uid, None)
+            goal_labels = {
+                "lose":     "похудение",
+                "maintain": "поддержание веса",
+                "gain":     "набор массы",
+            }
+            goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
+            await message.answer(
+                f"🎉 *Профиль настроен!*
 
 "
-                  f"Отправляй фото еды или описывай что съел — "
-                  f"буду следить за прогрессом! U0001f4f8",
-                  parse_mode="Markdown",
-                  reply_markup=main_keyboard(uid == ADMIN_ID),
-              )
-              return
+                f"🎯 Цель: *{goal_label}*
+"
+                f"🔥 Норма калорий: *{goal_kcal} ккал/день*
+"
+                f"🥩 Норма белка: *{protein_goal} г/день*
+
+"
+                f"Отправляй фото еды или описывай что съел — "
+                f"буду следить за прогрессом! 📸",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(uid == ADMIN_ID),
+            )
+            return
 
           # ── Admin broadcast state ──────────────────────────────────────────────
         if state == STATES["ADMIN_BROADCAST"] and uid == ADMIN_ID:
