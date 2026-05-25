@@ -111,7 +111,7 @@ STATES = {
 # State TTL: auto-expire stale FSM states after 1 hour of inactivity
 _STATE_TTL_SECONDS = 3600
 
-ONBOARD_STATES: set = {"ob_goal", "ob_gender", "ob_age", "ob_height", "ob_weight"}
+ONBOARD_STATES: set = {"ob_goal", "ob_gender", "ob_age", "ob_height", "ob_weight", "ob_activity"}
 
 
 def _get_state(uid: int) -> dict:
@@ -156,13 +156,21 @@ def _try_restore_onboard(uid: int) -> None:
         log.info(f"Restored onboard state uid={uid} state={persisted['state']}")
 
 
-def _calc_calorie_goal(gender, age, height_cm, weight_kg, goal_type):
-    """Mifflin-St Jeor BMR -> TDEE (x1.4) -> adjust for goal."""
+def _calc_calorie_goal(gender, age, height_cm, weight_kg, goal_type, activity="moderate"):
+    """Mifflin-St Jeor BMR -> TDEE (activity multiplier) -> adjust for goal."""
+    PAL = {
+        "sedentary": 1.2,    # сидячий образ жизни
+        "light":     1.375,  # лёгкие тренировки 1-3 дня/неделю
+        "moderate":  1.55,   # умеренные тренировки 3-5 дней/неделю
+        "active":    1.725,  # интенсивные тренировки 6-7 дней/неделю
+        "very_active": 1.9,  # физическая работа или 2x тренировки
+    }
+    pal = PAL.get(activity, 1.55)
     if gender == "female":
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
     else:
         bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
-    tdee = round(bmr * 1.4)
+    tdee = round(bmr * pal)
     if goal_type == "lose":
         kcal_goal = max(tdee - 400, 1200)
     elif goal_type == "gain":
@@ -1735,6 +1743,72 @@ async def main():
         _set_onboard_state(uid, "ob_age", state_data)
 
 
+
+    @dp.callback_query(F.data.startswith("ob_activity:"))
+    async def cb_ob_activity(callback: CallbackQuery):
+        uid = callback.from_user.id
+        activity = callback.data.split(":")[1]
+        await callback.answer()
+        activity_labels = {
+            "sedentary":  "🛋 Сидячий",
+            "light":      "🚶 Лёгкая",
+            "moderate":   "🏃 Средняя",
+            "active":     "💪 Высокая",
+            "very_active": "🔥 Очень высокая",
+        }
+        act_label = activity_labels.get(activity, activity)
+        try:
+            await callback.message.edit_text(
+                f"⚡️ *Активность:* {act_label} ✅",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+        ob_data = user_states.get(uid, {}).get("data", {})
+        ob_data["activity"] = activity
+        weight = ob_data.get("weight", 70.0)
+        goal_kcal, protein_goal = _calc_calorie_goal(
+            ob_data.get("gender", "male"),
+            ob_data.get("age", 25),
+            ob_data.get("height", 170),
+            weight,
+            ob_data.get("goal_type", "maintain"),
+            activity,
+        )
+        set_user_goals(
+            uid,
+            daily_goal=goal_kcal,
+            protein_goal=protein_goal,
+            weight_kg=weight,
+            height_cm=ob_data.get("height", 170),
+            age=ob_data.get("age", 25),
+            gender=ob_data.get("gender", "male"),
+            goal_type=ob_data.get("goal_type", "maintain"),
+            activity=activity,
+        )
+        mark_onboarded(uid)
+        try:
+            clear_onboard_state(uid)
+        except Exception:
+            pass
+        user_states.pop(uid, None)
+        goal_labels = {
+            "lose":     "похудение",
+            "maintain": "поддержание веса",
+            "gain":     "набор массы",
+        }
+        goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
+        await callback.message.answer(
+            f"🎉 *Профиль настроен!*\n\n"
+            f"🎯 Цель: *{goal_label}*\n"
+            f"⚡️ Активность: *{act_label}*\n"
+            f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
+            f"🥩 Норма белка: *{protein_goal} г/день*\n\n"
+            "Отправляй фото еды или описывай что съел — буду следить за прогрессом! 📸",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(uid == ADMIN_ID),
+        )
+
     @dp.message(F.photo)
     async def handle_photo(message: Message):
         uid = message.from_user.id
@@ -2094,6 +2168,22 @@ async def main():
                     "⚠️ Введи вес в кг от 30 до 300 или /cancel:"
                 )
                 return
+            ob_data = user_states.get(uid, {}).get("data", {})
+            ob_data["weight"] = weight
+            _set_onboard_state(uid, "ob_activity", ob_data)
+            activity_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛋 Сидячий (офис, мало движения)",    callback_data="ob_activity:sedentary")],
+                [InlineKeyboardButton(text="🚶 Лёгкая (прогулки, 1-3 трен/нед)", callback_data="ob_activity:light")],
+                [InlineKeyboardButton(text="🏃 Средняя (3-5 трен/нед)",           callback_data="ob_activity:moderate")],
+                [InlineKeyboardButton(text="💪 Высокая (6-7 трен/нед)",           callback_data="ob_activity:active")],
+                [InlineKeyboardButton(text="🔥 Очень высокая (физ. труд + трен)", callback_data="ob_activity:very_active")],
+            ])
+            await message.answer(
+                "⚡️ *Какой у тебя уровень активности?*",
+                parse_mode="Markdown",
+                reply_markup=activity_kb,
+            )
+            return
             ob_data = user_states.get(uid, {}).get("data", {})
             goal_kcal, protein_goal = _calc_calorie_goal(
                 ob_data.get("gender", "male"),
