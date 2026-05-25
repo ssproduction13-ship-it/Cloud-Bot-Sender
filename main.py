@@ -486,12 +486,13 @@ def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
 
 
 def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
-    """Inline keyboard listing today's entries — calories + delete only."""
+    """Inline keyboard listing today's entries — calories + edit + delete."""
     rows = []
     for i, e in enumerate(entries, 1):
         kcal = e["calories"] or 0
         rows.append([
-            InlineKeyboardButton(text=f"{i}. {kcal} ккал", callback_data=f"edit_e:{e['id']}"),
+            InlineKeyboardButton(text=f"{i}. {kcal} ккал", callback_data="noop"),
+            InlineKeyboardButton(text="✏️", callback_data=f"edit_e:{e['id']}"),
             InlineKeyboardButton(text="🗑", callback_data=f"del_e:{e['id']}"),
         ])
     rows.append([InlineKeyboardButton(text="🗑 Сбросить весь день", callback_data="reset_day")])
@@ -661,8 +662,7 @@ async def _deliver_analysis(
         parse_mode="Markdown",
         reply_markup=main_keyboard(uid == ADMIN_ID),
     )
-    if kcal:
-        await message.answer("Неточно? Можно исправить:", reply_markup=result_keyboard(entry_id))
+
 
     if food_name:
         fun = detect_fun_reaction(food_name.lower(), kcal)
@@ -1669,6 +1669,10 @@ async def main():
         header += "_Нажми запись чтобы изменить ккал, 🗑 — удалить_"
         await send_fn(header, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
 
+    @dp.callback_query(F.data == "noop")
+    async def cb_noop(callback: CallbackQuery):
+        await callback.answer()
+
     @dp.callback_query(F.data == "diary")
     async def cb_diary(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -2297,9 +2301,7 @@ async def main():
                         parse_mode="Markdown",
                         reply_markup=main_keyboard(uid == ADMIN_ID),
                     )
-                    await message.answer(
-                        "Неточно? Можно исправить:", reply_markup=result_keyboard(entry_id)
-                    )
+
                     if milestone and streak in STREAK_MILESTONES:
                         await message.answer(
                             f"🎉 *Ачивка разблокирована!*\n"
