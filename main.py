@@ -1426,22 +1426,19 @@ async def main():
             return
 
         if data == "adm_broadcast":
-              await callback.message.answer(
-                  "📡 *Сегментированная рассылка*
+            await callback.message.answer(
+                "📡 *Сегментированная рассылка*\n\nВыбери аудиторию:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="👥 Все активные", callback_data="bcast:all_active")],
+                    [InlineKeyboardButton(text="🎁 Триал-пользователи", callback_data="bcast:trial_active")],
+                    [InlineKeyboardButton(text="💎 Платные подписки", callback_data="bcast:paid_active")],
+                    [InlineKeyboardButton(text="⏰ Подписка истекла", callback_data="bcast:sub_expired")],
+                    [InlineKeyboardButton(text="😴 Не логируют 7+ дней", callback_data="bcast:no_log_week")],
+                ]),
+            )
+            return
 
-Выбери аудиторию:",
-                  parse_mode="Markdown",
-                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                      [InlineKeyboardButton(text="👥 Все активные", callback_data="bcast:all_active")],
-                      [InlineKeyboardButton(text="🎁 Триал-пользователи", callback_data="bcast:trial_active")],
-                      [InlineKeyboardButton(text="💎 Платные подписки", callback_data="bcast:paid_active")],
-                      [InlineKeyboardButton(text="⏰ Подписка истекла", callback_data="bcast:sub_expired")],
-                      [InlineKeyboardButton(text="😴 Не логируют 7+ дней", callback_data="bcast:no_log_week")],
-                  ]),
-              )
-              return
-
-  
         status_filter = "pending" if data == "adm_pending" else "paid"
         if data == "adm_users":
             status_filter = None
