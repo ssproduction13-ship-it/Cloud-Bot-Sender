@@ -156,21 +156,21 @@ def _try_restore_onboard(uid: int) -> None:
         log.info(f"Restored onboard state uid={uid} state={persisted['state']}")
 
 
-  def _calc_calorie_goal(gender, age, height_cm, weight_kg, goal_type):
-      """Mifflin-St Jeor BMR -> TDEE (x1.4) -> adjust for goal."""
-      if gender == "female":
-          bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
-      else:
-          bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
-      tdee = round(bmr * 1.4)
-      if goal_type == "lose":
-          kcal_goal = max(tdee - 400, 1200)
-      elif goal_type == "gain":
-          kcal_goal = tdee + 300
-      else:
-          kcal_goal = tdee
-      protein_goal = round(weight_kg * (2.2 if goal_type == "gain" else 2.0))
-      return round(kcal_goal), protein_goal
+def _calc_calorie_goal(gender, age, height_cm, weight_kg, goal_type):
+    """Mifflin-St Jeor BMR -> TDEE (x1.4) -> adjust for goal."""
+    if gender == "female":
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age - 161
+    else:
+        bmr = 10 * weight_kg + 6.25 * height_cm - 5 * age + 5
+    tdee = round(bmr * 1.4)
+    if goal_type == "lose":
+        kcal_goal = max(tdee - 400, 1200)
+    elif goal_type == "gain":
+        kcal_goal = tdee + 300
+    else:
+        kcal_goal = tdee
+    protein_goal = round(weight_kg * (2.2 if goal_type == "gain" else 2.0))
+    return round(kcal_goal), protein_goal
 
 
   # ── Кнопки меню ──────────────────────────────────────────────────────────────
