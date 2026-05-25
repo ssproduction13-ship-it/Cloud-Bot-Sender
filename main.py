@@ -2029,28 +2029,28 @@ async def main():
         }
         goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
         # Calculate weight forecast for onboarding completion message
-          goal_type_local = ob_data.get("goal_type", "maintain")
-          forecast_line = ""
-          if goal_type_local == "lose":
-              kg_month = round((goal_kcal * 30 - (goal_kcal + 400) * 30) / 7700 * (-1), 1)
-              kg_month = round(400 * 30 / 7700, 1)
-              forecast_line = f"\n\n📉 *Прогноз:* при соблюдении нормы — минус ~*{kg_month} кг/мес*"
-          elif goal_type_local == "gain":
-              kg_month = round(300 * 30 / 7700, 1)
-              forecast_line = f"\n\n📈 *Прогноз:* при профиците — плюс ~*{kg_month} кг/мес*"
-          else:
-              forecast_line = "\n\n⚖️ *Цель — поддержание веса.* Отслеживай КБЖУ каждый день!"
-          await callback.message.answer(
-              f"🎉 *Профиль настроен!*\n\n"
-              f"🎯 Цель: *{goal_label}*\n"
-              f"⚡️ Активность: *{act_label}*\n"
-              f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
-              f"🥩 Норма белка: *{protein_goal} г/день*"
-              f"{forecast_line}\n\n"
-              "Отправляй фото еды или описывай что съел — буду следить за прогрессом! 📸",
-              parse_mode="Markdown",
-              reply_markup=main_keyboard(uid == ADMIN_ID),
-          )
+        goal_type_local = ob_data.get("goal_type", "maintain")
+        forecast_line = ""
+        if goal_type_local == "lose":
+            kg_month = round((goal_kcal * 30 - (goal_kcal + 400) * 30) / 7700 * (-1), 1)
+            kg_month = round(400 * 30 / 7700, 1)
+            forecast_line = f"\n\n📉 *Прогноз:* при соблюдении нормы — минус ~*{kg_month} кг/мес*"
+        elif goal_type_local == "gain":
+            kg_month = round(300 * 30 / 7700, 1)
+            forecast_line = f"\n\n📈 *Прогноз:* при профиците — плюс ~*{kg_month} кг/мес*"
+        else:
+            forecast_line = "\n\n⚖️ *Цель — поддержание веса.* Отслеживай КБЖУ каждый день!"
+        await callback.message.answer(
+            f"🎉 *Профиль настроен!*\n\n"
+            f"🎯 Цель: *{goal_label}*\n"
+            f"⚡️ Активность: *{act_label}*\n"
+            f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
+            f"🥩 Норма белка: *{protein_goal} г/день*"
+            f"{forecast_line}\n\n"
+            "Отправляй фото еды или описывай что съел — буду следить за прогрессом! 📸",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(uid == ADMIN_ID),
+        )
 
     @dp.message(F.photo)
     async def handle_photo(message: Message):
