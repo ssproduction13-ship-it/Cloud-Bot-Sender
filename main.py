@@ -1370,38 +1370,35 @@ async def main():
 
     # ── Admin inline callbacks ─────────────────────────────────────────────────
     # ── Segmented broadcast ─────────────────────────────────────────────────────
-      @dp.callback_query(F.data.startswith("bcast:"))
-      async def cb_bcast_segment(callback: CallbackQuery):
-          if callback.from_user.id != ADMIN_ID:
-              await callback.answer("Нет доступа.", show_alert=True)
-              return
-          await callback.answer()
-          segment = callback.data.split(":")[1]
-          segment_labels = {
-              "all_active":   "Все активные",
-              "trial_active": "Триал-пользователи",
-              "paid_active":  "Платные подписки",
-              "sub_expired":  "Подписка истекла",
-              "no_log_week":  "Не логируют 7+ дней",
-          }
-          label = segment_labels.get(segment, segment)
-          users = get_users_by_segment(segment)
-          user_states[callback.from_user.id] = {
-              "state": STATES["ADMIN_BROADCAST"],
-              "data": {"segment": segment, "segment_label": label, "segment_count": len(users)},
-              "_ts": datetime.utcnow(),
-          }
-          await callback.message.answer(
-              f"📡 *Рассылка → {label}*
-"
-              f"👥 Получателей: *{len(users)}*
+    @dp.callback_query(F.data.startswith("bcast:"))
+    async def cb_bcast_segment(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        await callback.answer()
+        segment = callback.data.split(":")[1]
+        segment_labels = {
+            "all_active":   "Все активные",
+            "trial_active": "Триал-пользователи",
+            "paid_active":  "Платные подписки",
+            "sub_expired":  "Подписка истекла",
+            "no_log_week":  "Не логируют 7+ дней",
+        }
+        label = segment_labels.get(segment, segment)
+        users = get_users_by_segment(segment)
+        user_states[callback.from_user.id] = {
+            "state": STATES["ADMIN_BROADCAST"],
+            "data": {"segment": segment, "segment_label": label, "segment_count": len(users)},
+            "_ts": datetime.utcnow(),
+        }
+        await callback.message.answer(
+            f"📡 *Рассылка → {label}*\n"
+            f"👥 Получателей: *{len(users)}*\n\n"
+            f"Введи текст сообщения для рассылки:",
+            parse_mode="Markdown",
+        )
 
-"
-              f"Введи текст сообщения для рассылки:",
-              parse_mode="Markdown",
-          )
 
-  
     @dp.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_pending",
                                     "adm_paid", "adm_refresh", "adm_broadcast"}))
     async def cb_admin_panel(callback: CallbackQuery):
@@ -2124,13 +2121,9 @@ async def main():
           status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
           try:
               await callback.message.edit_text(
-                  f"💧 *Вода сегодня*
-
-"
-                  f"{bar}
-"
-                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%
-"
+                  f"💧 *Вода сегодня*\n\n"
+                  f"{bar}\n"
+                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
                   f"{status}",
                   parse_mode="Markdown",
                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2148,10 +2141,7 @@ async def main():
           reset_water_today(uid)
           try:
               await callback.message.edit_text(
-                  f"💧 *Вода сегодня*
-
-{'⬜' * WATER_GOAL}
-*0 / {WATER_GOAL} стаканов*",
+                  f"💧 *Вода сегодня*\n\n{'⬜' * WATER_GOAL}\n*0 / {WATER_GOAL} стаканов*",
                   parse_mode="Markdown",
                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                       [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
@@ -2178,16 +2168,10 @@ async def main():
           exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
           plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
           await message.answer(
-              f"🎉 *Оплата прошла! Добро пожаловать в Premium!*
-
-"
-              f"📅 Подписка *{plan_label}* — до *{exp}*
-"
-              f"📸 Безлимитные анализы разблокированы
-"
-              f"🍽 AI-план питания доступен
-
-"
+              f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
+              f"📅 Подписка *{plan_label}* — до *{exp}*\n"
+              f"📸 Безлимитные анализы разблокированы\n"
+              f"🍽 AI-план питания доступен\n"
               f"Отправляй фото еды — я всегда рядом 🚀",
               parse_mode="Markdown",
               reply_markup=main_keyboard(uid == ADMIN_ID),
@@ -2345,13 +2329,9 @@ async def main():
               pct = round(glasses / WATER_GOAL * 100) if WATER_GOAL else 0
               status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
               await message.answer(
-                  f"💧 *Вода сегодня*
-
-"
-                  f"{bar}
-"
-                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%
-"
+                  f"💧 *Вода сегодня*\n\n"
+                  f"{bar}\n"
+                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
                   f"{status}",
                   parse_mode="Markdown",
                   reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2370,7 +2350,6 @@ async def main():
                   await message.answer(
                       "🍽 *AI-план питания* — Premium функция
 
-"
                       "Получи персональный план питания на день на основе твоих целей и нормы КБЖУ 🎯",
                       parse_mode="Markdown",
                       reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2413,9 +2392,7 @@ async def main():
                   except Exception:
                       pass
                   await message.answer(
-                      f"🍽 *Твой план питания на сегодня*
-
-{plan_text}",
+                      f"🍽 *Твой план питания на сегодня*\n\n{plan_text}",
                       parse_mode="Markdown",
                   )
               except Exception as plan_e:
@@ -2652,10 +2629,8 @@ async def main():
                   await asyncio.sleep(0.05)
               user_states.pop(uid, None)
               await message.answer(
-                  f"📡 *Рассылка завершена*
-"
-                  f"👥 Аудитория: {segment_label}
-"
+                  f"📡 *Рассылка завершена*\n"
+                  f"👥 Аудитория: {segment_label}\n"
                   f"✅ Отправлено: {sent}  ❌ Ошибок: {failed}",
                   parse_mode="Markdown",
               )
