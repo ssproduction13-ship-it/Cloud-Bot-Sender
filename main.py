@@ -1245,6 +1245,49 @@ async def main():
         except Exception:
             pass
 
+
+    @dp.message(Command("giveall"))
+    async def cmd_giveall(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.answer("Использование: /giveall ДНЕЙ\nПример: /giveall 5")
+            return
+        try:
+            days = int(parts[1])
+        except ValueError:
+            await message.answer("Ошибка: ДНЕЙ должно быть числом.")
+            return
+        if days < 1 or days > 365:
+            await message.answer("Дней должно быть от 1 до 365.")
+            return
+
+        # Fetch all non-blocked users
+        all_users = get_all_users(None)
+        targets = [u for u in all_users if u.get("status") != "blocked"]
+
+        await message.answer(
+            f"⏳ Начинаю раздачу +{days} дней для *{len(targets)}* пользователей...",
+            parse_mode="Markdown",
+        )
+
+        ok = failed = 0
+        for u in targets:
+            try:
+                activate_subscription(u["telegram_id"], days)
+                ok += 1
+            except Exception as e:
+                log.warning(f"giveall error uid={u['telegram_id']}: {e}")
+                failed += 1
+
+        await message.answer(
+            f"✅ Готово!\n"
+            f"💎 +{days} дней выдано: *{ok}* пользователей\n"
+            f"❌ Ошибок: {failed}",
+            parse_mode="Markdown",
+        )
+
     @dp.message(Command("block"))
     async def cmd_block(message: Message):
         if message.from_user.id != ADMIN_ID:
