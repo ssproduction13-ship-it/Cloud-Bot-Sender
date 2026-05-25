@@ -4,7 +4,9 @@ import re
 import sys
 import logging
 import base64
+import urllib.parse
 import httpx
+from datetime import datetime, timedelta
 from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -18,8 +20,8 @@ from aiogram.types import (
     CallbackQuery,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    ReplyKeyboardRemove,
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 sys.path.insert(0, os.path.dirname(__file__))
 from db import (
@@ -33,14 +35,20 @@ from db import (
     activate_subscription,
     check_subscription_expired,
     get_all_users,
+    get_active_users,
     record_usage,
     get_daily_usage,
     get_daily_calories,
+    get_daily_macros,
+    get_weekly_stats,
     get_total_stats,
     register_referral,
     mark_referral_paid,
     get_referral_stats,
     update_entry_calories,
+    update_streak,
+    add_weight_log,
+    get_weight_history,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -56,6 +64,8 @@ SUB_DAYS = 30
 REFERRAL_BONUS_DAYS = 7
 REFERRAL_JOIN_BONUS_DAYS = 3
 
+STREAK_MILESTONES = {3: "🥉 3 дня", 7: "🥈 7 дней", 14: "🥇 14 дней", 30: "🏆 30 дней!", 60: "👑 60 дней!", 100: "🌟 100 дней!!"}
+
 openai_client = AsyncOpenAI(
     api_key=os.environ["GROQ_API_KEY"],
     base_url="https://api.groq.com/openai/v1",
@@ -63,44 +73,48 @@ openai_client = AsyncOpenAI(
     timeout=60,
 )
 
-# ── Conversation state ──
+# ── Conversation state ──────────────────────────────────────────────────────
 user_states: dict[int, dict] = {}
 
 STATES = {
-    "GOAL_ASK": "goal_ask",
-    "GOAL_ENTER": "goal_enter",
-    "CALC_AGE": "calc_age",
-    "CALC_WEIGHT": "calc_weight",
-    "CALC_HEIGHT": "calc_height",
-    "MANUAL_ENTRY": "manual_entry",
+    "GOAL_ASK":      "goal_ask",
+    "GOAL_ENTER":    "goal_enter",
+    "CALC_AGE":      "calc_age",
+    "CALC_WEIGHT":   "calc_weight",
+    "CALC_HEIGHT":   "calc_height",
+    "MANUAL_ENTRY":  "manual_entry",
     "CORRECT_ENTRY": "correct_entry",
+    "WEIGHT_LOG":    "weight_log",
 }
 
-# ── Кнопки меню ──
-BTN_TODAY = "📊 Сегодня"
-BTN_GOAL = "🎯 Норма"
-BTN_BUY = "💳 Подписка"
-BTN_REF = "👥 Пригласить"
-BTN_STATUS = "ℹ️ Статус"
-BTN_USERS = "👤 Пользователи"
-BTN_STATS = "📈 Статистика"
-BTN_ADD = "✏️ Добавить вручную"
+# ── Кнопки меню ─────────────────────────────────────────────────────────────
+BTN_TODAY   = "📊 Сегодня"
+BTN_GOAL    = "🎯 Норма"
+BTN_BUY     = "💳 Подписка"
+BTN_REF     = "👥 Пригласить"
+BTN_STATUS  = "ℹ️ Статус"
+BTN_USERS   = "👤 Пользователи"
+BTN_STATS   = "📈 Статистика"
+BTN_ADD     = "✏️ Добавить вручную"
+BTN_WEIGHT  = "⚖️ Мой вес"
 
-MENU_BUTTONS = {BTN_TODAY, BTN_GOAL, BTN_BUY, BTN_REF, BTN_STATUS, BTN_USERS, BTN_STATS, BTN_ADD}
+MENU_BUTTONS = {BTN_TODAY, BTN_GOAL, BTN_BUY, BTN_REF, BTN_STATUS,
+                BTN_USERS, BTN_STATS, BTN_ADD, BTN_WEIGHT}
 
 
 def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text=BTN_TODAY), KeyboardButton(text=BTN_GOAL)],
-        [KeyboardButton(text=BTN_BUY), KeyboardButton(text=BTN_REF)],
-        [KeyboardButton(text=BTN_ADD), KeyboardButton(text=BTN_STATUS)],
+        [KeyboardButton(text=BTN_TODAY),  KeyboardButton(text=BTN_GOAL)],
+        [KeyboardButton(text=BTN_ADD),    KeyboardButton(text=BTN_WEIGHT)],
+        [KeyboardButton(text=BTN_BUY),    KeyboardButton(text=BTN_REF)],
+        [KeyboardButton(text=BTN_STATUS)],
     ]
     if is_admin:
         rows.append([KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_STATS)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
-# ─────────────────── AI анализ ───────────────────
+# ─────────────────── AI анализ ──────────────────────────────────────────────
 
 VISION_PROMPT = """Ты — эксперт по еде. Опиши фото:
 1. Блюдо/продукты (точно)
@@ -110,104 +124,105 @@ VISION_PROMPT = """Ты — эксперт по еде. Опиши фото:
 
 Если это не еда — напиши только: НЕ ЕДА"""
 
-NUTRITION_PROMPT = """Ты — нутрициолог. Рассчитай КБЖУ для блюда ниже.
+NUTRITION_PROMPT = """Ты — дружелюбный AI-тренер по питанию с характером. Рассчитай КБЖУ для блюда.
 
 Блюдо: {desc}
 
-Ответь строго в формате:
+Ответь СТРОГО в этом формате (без отклонений):
 🍽 *{{название}}* (~{{вес}} г)
 
 🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
 
-💡 {{один короткий полезный факт, 1 предложение}}
+💬 {{живой короткий комментарий от тренера: оцени блюдо, дай совет или мотивацию. 1-2 предложения с эмодзи. Будь как друг, не как справочник.}}
 
-KCAL:{{ккал}}"""
+KCAL:{{ккал}}
+PROTEIN:{{б}}
+FAT:{{ж}}
+CARBS:{{у}}"""
+
+TEXT_NUTRITION_PROMPT = """Ты — дружелюбный AI-тренер по питанию с характером.
+
+Блюдо/продукт: {desc}
+
+Если это не еда — ответь только: НЕ ЕДА
+
+Иначе ответь СТРОГО в этом формате:
+🍽 *{{название}}* (~{{вес}} г)
+
+🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
+
+💬 {{живой короткий комментарий: оцени блюдо, дай совет. 1-2 предложения с эмодзи.}}
+
+KCAL:{{ккал}}
+PROTEIN:{{б}}
+FAT:{{ж}}
+CARBS:{{у}}"""
 
 
-async def analyze_food_photo(photo_bytes: bytes) -> tuple[str, int | None]:
+def _parse_macros(raw: str) -> tuple[str, int | None, float | None, float | None, float | None]:
+    """Extract kcal/protein/fat/carbs from AI response and clean display text."""
+    kcal = protein = fat = carbs = None
+    m = re.search(r"KCAL:(\d+)", raw)
+    if m:
+        kcal = int(m.group(1))
+    m = re.search(r"PROTEIN:([\d.]+)", raw)
+    if m:
+        protein = float(m.group(1))
+    m = re.search(r"FAT:([\d.]+)", raw)
+    if m:
+        fat = float(m.group(1))
+    m = re.search(r"CARBS:([\d.]+)", raw)
+    if m:
+        carbs = float(m.group(1))
+    display = re.sub(r"\s*(KCAL|PROTEIN|FAT|CARBS):\S+", "", raw).strip()
+    return display, kcal, protein, fat, carbs
+
+
+async def analyze_food_photo(photo_bytes: bytes):
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
         model="meta-llama/llama-4-scout-17b-16e-instruct",
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{b64}",
-                        },
-                    },
-                    {"type": "text", "text": VISION_PROMPT},
-                ],
-            }
-        ],
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": VISION_PROMPT},
+            ],
+        }],
         max_tokens=400,
     )
     desc = vision.choices[0].message.content or ""
     if "НЕ ЕДА" in desc.upper():
-        return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None
+        return "🙅 На фото не еда. Пришли фото блюда — посчитаю калории!", None, None, None, None
 
     nutrition = await openai_client.chat.completions.create(
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
-            {
-                "role": "system",
-                "content": "Точный нутрициолог. Отвечаешь строго по шаблону.",
-            },
+            {"role": "system", "content": "Точный нутрициолог и дружелюбный тренер. Строго по шаблону."},
             {"role": "user", "content": NUTRITION_PROMPT.format(desc=desc)},
         ],
-        max_tokens=400,
+        max_tokens=450,
     )
     raw = nutrition.choices[0].message.content or ""
-    kcal = None
-    m = re.search(r"KCAL:(\d+)", raw)
-    if m:
-        kcal = int(m.group(1))
-    display = re.sub(r"\s*KCAL:\d+", "", raw).strip()
-    return display, kcal
+    return _parse_macros(raw)
 
 
-TEXT_NUTRITION_PROMPT = """Ты — нутрициолог. Пользователь описал блюдо или продукт текстом.
-
-Блюдо: {desc}
-
-Если это не еда — ответь только: НЕ ЕДА
-
-Иначе ответь строго в формате:
-🍽 *{{название}}* (~{{вес}} г)
-
-🔥 {{ккал}} ккал  |  Б {{б}}г  Ж {{ж}}г  У {{у}}г
-
-💡 {{один короткий полезный факт, 1 предложение}}
-
-KCAL:{{ккал}}"""
-
-
-async def analyze_food_text(description: str) -> tuple[str, int | None]:
+async def analyze_food_text(description: str):
     response = await openai_client.chat.completions.create(
         model="meta-llama/llama-4-scout-17b-16e-instruct",
         messages=[
-            {
-                "role": "system",
-                "content": "Точный нутрициолог. Отвечаешь строго по шаблону.",
-            },
+            {"role": "system", "content": "Точный нутрициолог и дружелюбный тренер. Строго по шаблону."},
             {"role": "user", "content": TEXT_NUTRITION_PROMPT.format(desc=description)},
         ],
-        max_tokens=400,
+        max_tokens=450,
     )
     raw = response.choices[0].message.content or ""
     if "НЕ ЕДА" in raw.upper():
-        return "🙅 Это не похоже на еду. Введи название блюда или продукта.", None
-    kcal = None
-    m = re.search(r"KCAL:(\d+)", raw)
-    if m:
-        kcal = int(m.group(1))
-    display = re.sub(r"\s*KCAL:\d+", "", raw).strip()
-    return display, kcal
+        return "🙅 Это не похоже на еду. Введи название блюда или продукта.", None, None, None, None
+    return _parse_macros(raw)
 
 
-# ─────────────────── Хелперы ───────────────────
+# ─────────────────── Хелперы ────────────────────────────────────────────────
 
 
 def user_label(row) -> str:
@@ -222,40 +237,25 @@ def ref_link(uid: int) -> str:
 
 
 def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text="✏️ Скорректировать калории", callback_data=f"correct:{entry_id}"
-            )
-        ]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✏️ Скорректировать калории", callback_data=f"correct:{entry_id}")
+    ]])
 
 
 def ref_keyboard(uid: int) -> InlineKeyboardMarkup:
-    import urllib.parse
     link = ref_link(uid)
     share_text = "Считаю калории по фото еды 🍽 Попробуй бесплатно:"
     share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(share_text)}"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)
-        ]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)
+    ]])
 
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Одобрить", callback_data=f"approve_{uid}"
-                ),
-                InlineKeyboardButton(
-                    text="🚫 Заблокировать", callback_data=f"block_{uid}"
-                ),
-            ]
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Одобрить",       callback_data=f"approve_{uid}"),
+        InlineKeyboardButton(text="🚫 Заблокировать",  callback_data=f"block_{uid}"),
+    ]])
 
 
 async def notify_admin(bot: Bot, text: str):
@@ -289,18 +289,11 @@ async def deny(message: Message, reason: str):
         await message.answer("⛔ Доступ заблокирован.")
     elif reason == "trial_expired":
         await message.answer(
-            "⏰ *Бесплатный период закончился*\n\n"
-            "Оформи подписку, чтобы продолжить пользоваться ботом.",
+            "⏰ *Бесплатный период закончился*\n\nОформи подписку, чтобы продолжить.",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="💳 Купить подписку (150 ⭐)", callback_data="buy_sub"
-                        )
-                    ]
-                ]
-            ),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="💳 Купить подписку (150 ⭐)", callback_data="buy_sub")
+            ]]),
         )
     else:
         await message.answer("Напиши /start для регистрации.")
@@ -312,98 +305,180 @@ def progress_bar(current: int, goal: int, width: int = 10) -> str:
     return f"{'█' * filled}{'░' * (width - filled)} {pct}%"
 
 
+def streak_emoji(streak: int) -> str:
+    if streak >= 30:
+        return "🏆"
+    if streak >= 14:
+        return "🥇"
+    if streak >= 7:
+        return "🥈"
+    if streak >= 3:
+        return "🥉"
+    return "🔥"
+
+
 def daily_progress_text(uid: int) -> str:
-    total = get_daily_calories(uid)
+    macros = get_daily_macros(uid)
+    total = macros["kcal"]
     user = get_user(uid)
     goal = user["daily_goal"] if user else None
+    streak = user.get("streak_days", 0) if user else 0
+
+    streak_line = f"\n{streak_emoji(streak)} Серия: *{streak} {'день' if streak == 1 else 'дней'}*" if streak > 0 else ""
+
     if not goal:
-        return f"\n\n📊 *Сегодня:* {total} ккал"
+        return f"\n\n📊 *Сегодня:* {total} ккал{streak_line}"
+
     remaining = max(goal - total, 0)
     bar = progress_bar(total, goal)
     over = total - goal
-    extra = (
-        f"⚠️ Превышение на {over} ккал" if over > 0 else f"Осталось: {remaining} ккал"
-    )
-    return f"\n\n📊 *Сегодня:* {total} / {goal} ккал\n{bar}\n{extra}"
+    extra = f"⚠️ Превышение на {over} ккал" if over > 0 else f"Осталось: {remaining} ккал"
+
+    protein_line = ""
+    if macros["protein"] > 0:
+        protein_line = f"\nБ {macros['protein']}г  Ж {macros['fat']}г  У {macros['carbs']}г"
+
+    return f"\n\n📊 *Сегодня:* {total} / {goal} ккал\n{bar}\n{extra}{protein_line}{streak_line}"
 
 
-# ─────────────────── Setup flow ───────────────────
+# ── Setup flow ────────────────────────────────────────────────────────────────
 
 
 def goal_ask_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Знаю норму", callback_data="goal_know"),
-                InlineKeyboardButton(text="Рассчитай мне", callback_data="goal_calc"),
-                InlineKeyboardButton(text="Пропустить", callback_data="goal_skip"),
-            ]
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Знаю норму",    callback_data="goal_know"),
+        InlineKeyboardButton(text="Рассчитай мне", callback_data="goal_calc"),
+        InlineKeyboardButton(text="Пропустить",    callback_data="goal_skip"),
+    ]])
 
 
 def gender_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Мужчина", callback_data="gender_m"),
-                InlineKeyboardButton(text="Женщина", callback_data="gender_f"),
-            ]
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Мужчина", callback_data="gender_m"),
+        InlineKeyboardButton(text="Женщина", callback_data="gender_f"),
+    ]])
 
 
 def activity_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🛋 Сидячий образ жизни", callback_data="act_1.2"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🚶 Лёгкая активность (1-3 дня)", callback_data="act_1.375"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🏃 Средняя активность (3-5 дней)", callback_data="act_1.55"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🏋 Высокая активность (6-7 дней)", callback_data="act_1.725"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⚡ Очень высокая / спортсмен", callback_data="act_1.9"
-                )
-            ],
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛋 Сидячий образ жизни",         callback_data="act_1.2")],
+        [InlineKeyboardButton(text="🚶 Лёгкая активность (1-3 дня)", callback_data="act_1.375")],
+        [InlineKeyboardButton(text="🏃 Средняя активность (3-5 дней)", callback_data="act_1.55")],
+        [InlineKeyboardButton(text="🏋 Высокая активность (6-7 дней)", callback_data="act_1.725")],
+        [InlineKeyboardButton(text="⚡ Очень высокая / спортсмен",   callback_data="act_1.9")],
+    ])
 
 
 async def ask_daily_goal(bot: Bot, uid: int):
     user_states[uid] = {"state": STATES["GOAL_ASK"], "data": {}}
     await bot.send_message(
         uid,
-        "🎯 *Установи дневную норму калорий*\n\n"
-        "Это поможет отслеживать прогресс после каждого приёма пищи.",
+        "🎯 *Установи дневную норму калорий*\n\nЭто поможет отслеживать прогресс после каждого приёма пищи.",
         parse_mode="Markdown",
         reply_markup=goal_ask_keyboard(),
     )
 
 
-def calc_tdee(
-    gender: str, age: int, weight: float, height: float, activity: float
-) -> int:
+def calc_tdee(gender: str, age: int, weight: float, height: float, activity: float) -> tuple[int, int]:
     bmr = 10 * weight + 6.25 * height - 5 * age + (5 if gender == "m" else -161)
-    return round(bmr * activity)
+    tdee = round(bmr * activity)
+    protein = round(weight * 1.6)
+    return tdee, protein
 
 
-# ─────────────────── Бот ───────────────────
+# ─────────────────── Планировщик (APScheduler) ──────────────────────────────
+
+
+async def send_morning_checkins(bot: Bot):
+    """Утренние напоминания всем активным пользователям (8:00 МСК)."""
+    users = get_active_users()
+    for user in users:
+        uid = user["telegram_id"]
+        goal = user.get("daily_goal")
+        streak = user.get("streak_days", 0)
+        name = user.get("first_name") or "Привет"
+        try:
+            goal_line = f"🎯 Цель: *{goal} ккал*" if goal else "🎯 Норма не задана — установи в меню"
+            streak_line = f"\n{streak_emoji(streak)} Серия: *{streak} {'день' if streak == 1 else 'дней'}* — не прерывай!" if streak > 1 else ""
+            await bot.send_message(
+                uid,
+                f"☀️ *Доброе утро, {name}!*\n\n{goal_line}{streak_line}\n\n📸 Начни день — сфотографируй завтрак!",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"morning checkin {uid}: {e}")
+
+
+async def send_evening_summaries(bot: Bot):
+    """Вечерние итоги дня (21:00 МСК)."""
+    users = get_active_users()
+    for user in users:
+        uid = user["telegram_id"]
+        goal = user.get("daily_goal")
+        streak = user.get("streak_days", 0)
+        try:
+            macros = get_daily_macros(uid)
+            total = macros["kcal"]
+            if total == 0:
+                continue
+
+            if goal:
+                pct = round(total / goal * 100)
+                result_line = (
+                    f"✅ Отличный день — {pct}% нормы" if 85 <= pct <= 115
+                    else f"⚠️ Перебор на {total - goal} ккал" if pct > 115
+                    else f"📉 Недобор — {goal - total} ккал осталось"
+                )
+            else:
+                result_line = f"📊 Итого за день: {total} ккал"
+
+            protein_line = f"💪 Белок: {macros['protein']}г" if macros["protein"] > 0 else ""
+            streak_line = f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}* подряд!" if streak > 0 else ""
+
+            await bot.send_message(
+                uid,
+                f"🌙 *Итоги дня*\n\n"
+                f"🔥 Калории: *{total}* {f'/ {goal}' if goal else ''} ккал\n"
+                f"{protein_line}\n"
+                f"{result_line}{streak_line}",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"evening summary {uid}: {e}")
+
+
+async def send_weekly_reports(bot: Bot):
+    """Еженедельные отчёты (понедельник 9:00 МСК)."""
+    users = get_active_users()
+    for user in users:
+        uid = user["telegram_id"]
+        try:
+            stats = get_weekly_stats(uid)
+            if stats["logged_days"] < 2:
+                continue
+
+            consistency_icon = "🔥" if stats["consistency"] >= 80 else "📊" if stats["consistency"] >= 50 else "💤"
+            goal = user.get("daily_goal", 0)
+            avg_vs_goal = ""
+            if goal and stats["avg_kcal"]:
+                diff = stats["avg_kcal"] - goal
+                avg_vs_goal = f" ({'➕' if diff > 0 else '➖'}{abs(diff)} от нормы)"
+
+            await bot.send_message(
+                uid,
+                f"📊 *Итоги недели*\n\n"
+                f"🍽 Дней с записями: *{stats['logged_days']}/7*\n"
+                f"🔥 Среднее за день: *{stats['avg_kcal']} ккал*{avg_vs_goal}\n"
+                f"💪 Средний белок: *{stats['avg_protein']}г*\n"
+                f"{consistency_icon} Постоянство: *{stats['consistency']}%*\n\n"
+                f"{'🔥 Отличная неделя — так держать!' if stats['consistency'] >= 80 else '💪 Старайся логировать каждый день — это ключ к результату!'}",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"weekly report {uid}: {e}")
+
+
+# ─────────────────── Бот ────────────────────────────────────────────────────
 
 
 async def main():
@@ -411,7 +486,14 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # ── /start ──
+    # ── Scheduler setup ──
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    scheduler.add_job(send_morning_checkins, "cron", hour=8,  minute=0, args=[bot])
+    scheduler.add_job(send_evening_summaries, "cron", hour=21, minute=0, args=[bot])
+    scheduler.add_job(send_weekly_reports,    "cron", day_of_week="mon", hour=9, minute=0, args=[bot])
+    scheduler.start()
+
+    # ── /start ──────────────────────────────────────────────────────────────
     @dp.message(Command("start"))
     async def cmd_start(message: Message):
         uid = message.from_user.id
@@ -453,9 +535,8 @@ async def main():
         if uid == ADMIN_ID:
             user = get_user(uid)
             if user and user["status"] in ("pending", "beta", "blocked"):
-                approve_user(uid, trial_days=3650)  # Админ — «вечный» триал
+                approve_user(uid, trial_days=3650)
             elif user and user["status"] == "paid":
-                from datetime import datetime
                 if not user["expires_at"] or datetime.fromisoformat(user["expires_at"]) < datetime.utcnow():
                     activate_subscription(uid, 3650)
 
@@ -492,29 +573,28 @@ async def main():
         used = get_daily_usage(uid)
         limit = BETA_DAILY_LIMIT if status == "beta" else "∞"
         sub_info = ""
-        from datetime import datetime
+        streak = user.get("streak_days", 0)
 
         if status == "paid" and user["expires_at"]:
             exp = datetime.fromisoformat(user["expires_at"]).strftime("%d.%m.%Y")
             sub_info = f"\n💎 Подписка до {exp}"
         elif status == "beta" and user["trial_expires_at"]:
-            trial_exp = datetime.fromisoformat(user["trial_expires_at"]).strftime(
-                "%d.%m.%Y"
-            )
+            trial_exp = datetime.fromisoformat(user["trial_expires_at"]).strftime("%d.%m.%Y")
             sub_info = f"\n🎁 Бесплатный период до {trial_exp}"
+
+        streak_info = f"\n{streak_emoji(streak)} Серия: {streak} дней" if streak > 0 else ""
 
         await message.answer(
             f"👋 Привет, {name}!\n\n"
             f"📸 Пришли фото еды — посчитаю калории и БЖУ.\n"
-            f"📊 Сегодня: {used}/{limit}{sub_info}",
+            f"📊 Сегодня: {used}/{limit}{sub_info}{streak_info}",
             reply_markup=main_keyboard(uid == ADMIN_ID),
         )
 
         if user["daily_goal"] is None and uid not in user_states:
             await ask_daily_goal(bot, uid)
 
-    # ── Inline callback: быстрая покупка из сообщения об истечении триала ──
-
+    # ── Callbacks: покупка ───────────────────────────────────────────────────
     @dp.callback_query(F.data == "buy_sub")
     async def cb_buy_sub(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -522,16 +602,14 @@ async def main():
         await bot.send_invoice(
             chat_id=uid,
             title="CalorieBot — 30 дней",
-            description="✅ Безлимит  ✅ Трекер калорий  ✅ Точный расчёт КБЖУ",
+            description="✅ Безлимит  ✅ Трекер калорий  ✅ Точный расчёт КБЖУ  🔥 Стрики",
             payload=f"sub_30d_{uid}",
             currency="XTR",
             prices=[LabeledPrice(label="Подписка 30 дней", amount=SUB_PRICE_STARS)],
         )
 
-    # ── Inline callbacks: одобрение/блок из уведомления ──
-
+    # ── Callbacks: одобрение/блок ─────────────────────────────────────────────
     def safe_md(text: str) -> str:
-        """Экранирует _ и * для Markdown v1."""
         return (text or "").replace("_", "\\_").replace("*", "\\*")
 
     def user_card_md(user) -> str:
@@ -552,12 +630,9 @@ async def main():
             return
         approve_user(target_id, trial_days=3)
         approved = get_user(target_id)
-        from datetime import datetime
-
         trial_exp = (
             datetime.fromisoformat(approved["trial_expires_at"]).strftime("%d.%m.%Y")
-            if approved["trial_expires_at"]
-            else "?"
+            if approved["trial_expires_at"] else "?"
         )
         await callback.answer("✅ Одобрено!")
         await callback.message.edit_text(
@@ -572,12 +647,12 @@ async def main():
                 f"🎁 *Бесплатный период:* 3 дня, до {trial_exp}\n"
                 f"📸 До {BETA_DAILY_LIMIT} анализов в день\n\n"
                 f"Отправь фото еды — посчитаю калории!\n\n"
-                f"📏 *Совет:* фотографируй еду с расстояния *10–15 см* — так распознавание точнее.",
+                f"📏 *Совет:* фотографируй еду с расстояния *10–15 см* — так точнее.",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(target_id == ADMIN_ID),
             )
-            approved = get_user(target_id)
-            if approved and approved["daily_goal"] is None:
+            approved2 = get_user(target_id)
+            if approved2 and approved2["daily_goal"] is None:
                 await ask_daily_goal(bot, target_id)
         except Exception as e:
             log.warning(f"approve notify user: {e}")
@@ -600,23 +675,18 @@ async def main():
             reply_markup=None,
         )
 
-    # ── Inline callbacks: setup flow ──
-
+    # ── Callbacks: setup flow ────────────────────────────────────────────────
     @dp.callback_query(F.data.in_({"goal_know", "goal_calc", "goal_skip"}))
     async def cb_goal_choice(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
         if callback.data == "goal_skip":
             user_states.pop(uid, None)
-            await callback.message.edit_text(
-                "Норма не задана. Изменить через кнопку 🎯 Норма"
-            )
+            await callback.message.edit_text("Норма не задана. Изменить через кнопку 🎯 Норма")
             return
         if callback.data == "goal_know":
             user_states[uid] = {"state": STATES["GOAL_ENTER"], "data": {}}
-            await callback.message.edit_text(
-                "Введи свою дневную норму в ккал (например: 2000):"
-            )
+            await callback.message.edit_text("Введи свою дневную норму в ккал (например: 2000):")
             return
         user_states[uid] = {"state": STATES["CALC_AGE"], "data": {}}
         await callback.message.edit_text(
@@ -641,18 +711,17 @@ async def main():
             return
         factor = float(callback.data[4:])
         data = user_states[uid]["data"]
-        tdee = calc_tdee(
-            data["gender"], data["age"], data["weight"], data["height"], factor
-        )
-        set_daily_goal(uid, tdee)
+        tdee, protein = calc_tdee(data["gender"], data["age"], data["weight"], data["height"], factor)
+        set_daily_goal(uid, tdee, protein_goal=protein)
         user_states.pop(uid, None)
         await callback.message.edit_text(
-            f"✅ *Твоя дневная норма: {tdee} ккал*\n\n"
-            f"Рассчитано по формуле TDEE. Изменить → кнопка 🎯 Норма",
+            f"✅ *Твоя дневная норма: {tdee} ккал*\n"
+            f"💪 Цель по белку: *{protein}г*\n\n"
+            f"Рассчитано по формуле TDEE. Изменить → 🎯 Норма",
             parse_mode="Markdown",
         )
 
-    # ── Коррекция результата ──
+    # ── Callback: коррекция результата ──────────────────────────────────────
     @dp.callback_query(F.data.startswith("correct:"))
     async def cb_correct(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -663,11 +732,10 @@ async def main():
             return
         user_states[uid] = {"state": STATES["CORRECT_ENTRY"], "data": {"entry_id": entry_id}}
         await callback.message.edit_text(
-            "✏️ Введи правильное количество калорий (только число, например: 450):\n\n"
-            "Или /cancel для отмены."
+            "✏️ Введи правильное количество калорий (только число, например: 450):\n\nИли /cancel для отмены."
         )
 
-    # ── Текстовые сообщения ──
+    # ── Текстовые сообщения ──────────────────────────────────────────────────
     @dp.message(F.text)
     async def handle_text(message: Message):
         uid = message.from_user.id
@@ -696,10 +764,13 @@ async def main():
         if text == BTN_BUY:
             await do_buy(message, bot)
             return
-        if text == BTN_USERS and message.from_user.id == ADMIN_ID:
+        if text == BTN_WEIGHT:
+            await show_weight(message)
+            return
+        if text == BTN_USERS and uid == ADMIN_ID:
             await show_users(message)
             return
-        if text == BTN_STATS and message.from_user.id == ADMIN_ID:
+        if text == BTN_STATS and uid == ADMIN_ID:
             await show_stats(message)
             return
         if text == BTN_ADD:
@@ -710,16 +781,15 @@ async def main():
                 return
             user_states[uid] = {"state": STATES["MANUAL_ENTRY"], "data": {}}
             await message.answer(
-                "✏️ *Ручной ввод калорий*\n\n"
-                "Введи одно из:\n"
-                "• *Число* — напрямую запишет калории (например: `350`)\n"
-                "• *Название блюда* — бот рассчитает КБЖУ (например: `гречка с курицей 200г`)\n\n"
-                "Или нажми /cancel для отмены.",
+                "✏️ *Ручной ввод*\n\n"
+                "• *Число* → запишет калории напрямую (например: `350`)\n"
+                "• *Название блюда* → рассчитаю КБЖУ (например: `гречка с курицей 200г`)\n\n"
+                "Или /cancel для отмены.",
                 parse_mode="Markdown",
             )
             return
 
-        # ── Setup flow state machine ──
+        # ── State machine ──
         if not state:
             return
 
@@ -778,8 +848,31 @@ async def main():
                 await message.answer("Введи рост в см (100–250):")
                 return
             data["height"] = height
+            await message.answer("Выбери уровень активности:", reply_markup=activity_keyboard())
+            return
+
+        if s == STATES["WEIGHT_LOG"]:
+            user_states.pop(uid, None)
+            try:
+                w = float(re.sub(r"[^\d.]", "", text))
+                if w < 20 or w > 300:
+                    raise ValueError
+            except (ValueError, TypeError):
+                await message.answer("Введи вес в кг (например: 75.5):")
+                user_states[uid] = {"state": STATES["WEIGHT_LOG"], "data": {}}
+                return
+            add_weight_log(uid, w)
+            history = get_weight_history(uid, days=30)
+            diff_line = ""
+            if len(history) >= 2:
+                first_w = history[0][1]
+                diff = round(w - first_w, 1)
+                sign = "+" if diff > 0 else ""
+                diff_line = f"\n📉 За {len(history)} записей: *{sign}{diff} кг*"
             await message.answer(
-                "Выбери уровень активности:", reply_markup=activity_keyboard()
+                f"⚖️ Записано: *{w} кг*{diff_line}",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(uid == ADMIN_ID),
             )
             return
 
@@ -801,33 +894,44 @@ async def main():
                 )
             else:
                 user = get_user(uid)
-                if user["status"] == "beta":
-                    used = get_daily_usage(uid)
-                    if used >= BETA_DAILY_LIMIT:
-                        await message.answer(
-                            f"⚠️ Лимит {BETA_DAILY_LIMIT} анализов в день исчерпан.",
-                            reply_markup=main_keyboard(uid == ADMIN_ID),
-                        )
-                        return
-                await message.answer("🔍 Считаю калории...")
+                if user["status"] == "beta" and get_daily_usage(uid) >= BETA_DAILY_LIMIT:
+                    await message.answer(
+                        f"⚠️ Лимит {BETA_DAILY_LIMIT} анализов в день исчерпан.",
+                        reply_markup=main_keyboard(uid == ADMIN_ID),
+                    )
+                    return
+                thinking_msg = await message.answer("🔍 Считаю калории...")
                 try:
-                    result, kcal = await analyze_food_text(text)
+                    display, kcal, protein, fat, carbs = await analyze_food_text(text)
                     entry_id = None
                     if kcal:
-                        entry_id = record_usage(uid, kcal)
+                        entry_id = record_usage(uid, kcal, protein, fat, carbs)
+                        streak, milestone = update_streak(uid)
                     progress = daily_progress_text(uid)
+                    try:
+                        await thinking_msg.delete()
+                    except Exception:
+                        pass
                     await message.answer(
-                        result + progress,
+                        display + progress,
                         parse_mode="Markdown",
                         reply_markup=main_keyboard(uid == ADMIN_ID),
                     )
                     if kcal and entry_id:
                         await message.answer(
-                            "Результат неточный? Нажми кнопку чтобы исправить:",
+                            "Результат неточный? Можно исправить:",
                             reply_markup=result_keyboard(entry_id),
+                        )
+                    if kcal and milestone and streak in STREAK_MILESTONES:
+                        await message.answer(
+                            f"🎉 Ачивка разблокирована!\n{STREAK_MILESTONES[streak]} подряд!\n\nТак держать! 💪",
                         )
                 except Exception as e:
                     log.error(f"analyze_food_text error: {e}")
+                    try:
+                        await thinking_msg.delete()
+                    except Exception:
+                        pass
                     await message.answer(
                         "⚠️ Не удалось рассчитать. Попробуй снова.",
                         reply_markup=main_keyboard(uid == ADMIN_ID),
@@ -854,29 +958,28 @@ async def main():
             )
             return
 
-    # ── Фото ──
+    # ── Фото ────────────────────────────────────────────────────────────────
     @dp.message(F.photo)
     async def handle_photo(message: Message):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         ok, reason = access_check(user)
         if not ok:
             await deny(message, reason)
             return
 
-        if user["status"] == "beta":
-            used = get_daily_usage(uid)
-            if used >= BETA_DAILY_LIMIT:
-                await message.answer(
-                    f"⚠️ Лимит {BETA_DAILY_LIMIT} анализов в день исчерпан.",
-                    reply_markup=main_keyboard(uid == ADMIN_ID),
-                )
-                return
+        if user["status"] == "beta" and get_daily_usage(uid) >= BETA_DAILY_LIMIT:
+            await message.answer(
+                f"⚠️ Лимит {BETA_DAILY_LIMIT} анализов в день исчерпан.",
+                reply_markup=main_keyboard(uid == ADMIN_ID),
+            )
+            return
 
-        await message.answer("🔍 Анализирую...\n\n📏 _Совет: держи телефон в 10–15 см от еды для лучшего распознавания_", parse_mode="Markdown")
+        thinking_msg = await message.answer(
+            "🔍 Анализирую...\n\n📏 _Держи телефон в 10–15 см от еды для лучшего результата_",
+            parse_mode="Markdown",
+        )
         try:
             photo: PhotoSize = message.photo[-1]
             file = await bot.get_file(photo.file_id)
@@ -884,43 +987,50 @@ async def main():
             async with httpx.AsyncClient() as client:
                 photo_bytes = (await client.get(url, timeout=15)).content
 
-            result, kcal = await analyze_food_photo(photo_bytes)
-            entry_id = record_usage(uid, kcal)
+            display, kcal, protein, fat, carbs = await analyze_food_photo(photo_bytes)
+            entry_id = record_usage(uid, kcal, protein, fat, carbs)
+            streak, milestone = update_streak(uid) if kcal else (0, False)
 
             progress = daily_progress_text(uid)
-            hint = (
-                "\n\n_Установи норму — кнопка 🎯 Норма_"
-                if user["daily_goal"] is None
-                else ""
-            )
+            hint = "\n\n_Установи норму — кнопка 🎯 Норма_" if user["daily_goal"] is None else ""
+
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
 
             await message.answer(
-                result + progress + hint,
+                display + progress + hint,
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(uid == ADMIN_ID),
             )
             if kcal:
                 await message.answer(
-                    "Результат неточный? Нажми кнопку чтобы исправить:",
+                    "Результат неточный? Можно исправить:",
                     reply_markup=result_keyboard(entry_id),
+                )
+            if milestone and streak in STREAK_MILESTONES:
+                await message.answer(
+                    f"🎉 Ачивка разблокирована!\n{STREAK_MILESTONES[streak]} подряд!\n\nПродолжай в том же духе! 💪",
                 )
 
         except Exception as e:
             log.error(f"Ошибка анализа: {e}")
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
             await message.answer("⚠️ Не удалось проанализировать. Попробуй ещё раз.")
 
-    # ── Pre-checkout ──
+    # ── Платёж ──────────────────────────────────────────────────────────────
     @dp.pre_checkout_query()
     async def pre_checkout(query: PreCheckoutQuery):
         await query.answer(ok=True)
 
-    # ── Успешная оплата ──
     @dp.message(F.successful_payment)
     async def payment_done(message: Message):
         uid = message.from_user.id
         activate_subscription(uid, SUB_DAYS)
-        from datetime import datetime, timedelta
-
         exp = (datetime.utcnow() + timedelta(days=SUB_DAYS)).strftime("%d.%m.%Y")
         await message.answer(
             f"🎉 Оплата прошла! Подписка до *{exp}*.\nОтправляй фото без ограничений 📸",
@@ -934,8 +1044,7 @@ async def main():
                 ref_user = get_user(referrer_id)
                 new_exp = (
                     datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
-                    if ref_user["expires_at"]
-                    else "—"
+                    if ref_user["expires_at"] else "—"
                 )
                 await bot.send_message(
                     referrer_id,
@@ -947,53 +1056,52 @@ async def main():
         user = get_user(uid)
         await notify_admin(bot, f"💰 Оплата: {user_label(user)} → до {exp}")
 
-    # ─────────── Логика кнопок (переиспользуется) ───────────
+    # ─── Кнопочные функции ───────────────────────────────────────────────────
 
     async def show_today(message: Message):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         ok, reason = access_check(user)
         if not ok:
             await deny(message, reason)
             return
 
-        total = get_daily_calories(uid)
+        macros = get_daily_macros(uid)
+        total = macros["kcal"]
         meals = get_daily_usage(uid)
         goal = user["daily_goal"]
+        streak = user.get("streak_days", 0)
+        streak_line = f"\n{streak_emoji(streak)} Серия: *{streak} {'день' if streak == 1 else 'дней'}*" if streak > 0 else ""
+
+        macros_line = ""
+        if macros["protein"] > 0:
+            macros_line = f"\n💪 Б: {macros['protein']}г  Ж: {macros['fat']}г  У: {macros['carbs']}г"
 
         if goal:
             remaining = max(goal - total, 0)
             bar = progress_bar(total, goal)
             over = total - goal
-            extra = (
-                f"⚠️ Превышение на {over} ккал"
-                if over > 0
-                else f"Осталось: {remaining} ккал"
-            )
+            extra = f"⚠️ Превышение на {over} ккал" if over > 0 else f"Осталось: {remaining} ккал"
             text = (
                 f"📊 *Сегодня*\n\n"
                 f"🔥 {total} / {goal} ккал\n"
                 f"{bar}\n"
-                f"{extra}\n\n"
-                f"🍽 Приёмов пищи: {meals}"
+                f"{extra}{macros_line}\n"
+                f"🍽 Приёмов пищи: {meals}{streak_line}"
             )
         else:
             text = (
                 f"📊 *Сегодня*\n\n"
-                f"🔥 Съедено: {total} ккал\n"
-                f"🍽 Приёмов пищи: {meals}\n\n"
+                f"🔥 Съедено: {total} ккал{macros_line}\n"
+                f"🍽 Приёмов пищи: {meals}{streak_line}\n\n"
                 f"Нажми 🎯 Норма — установить дневную цель"
             )
         await message.answer(text, parse_mode="Markdown")
 
     async def show_goal_setup(message: Message, bot: Bot):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         ok, reason = access_check(user)
         if not ok:
@@ -1010,9 +1118,7 @@ async def main():
 
     async def show_status(message: Message):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         if not user or user["status"] == "pending":
             await message.answer("⏳ Заявка на рассмотрении.")
@@ -1020,14 +1126,20 @@ async def main():
 
         status = user["status"]
         used = get_daily_usage(uid)
-        total = get_daily_calories(uid)
+        macros = get_daily_macros(uid)
+        total = macros["kcal"]
         ref_s = get_referral_stats(uid)
         goal = user["daily_goal"]
+        streak = user.get("streak_days", 0)
+        best_streak = user.get("best_streak", 0)
         kcal_str = f"{total}/{goal}" if goal else str(total)
 
-        if status == "paid" and not check_subscription_expired(uid):
-            from datetime import datetime
+        streak_block = (
+            f"\n{streak_emoji(streak)} Серия: *{streak}* дней  |  Рекорд: *{best_streak}*"
+            if streak > 0 or best_streak > 0 else ""
+        )
 
+        if status == "paid" and not check_subscription_expired(uid):
             exp_dt = datetime.fromisoformat(user["expires_at"])
             exp = exp_dt.strftime("%d.%m.%Y")
             days_left = max((exp_dt - datetime.utcnow()).days, 0)
@@ -1035,13 +1147,12 @@ async def main():
                 f"💎 *Подписка активна*\n"
                 f"📅 До {exp} — осталось *{days_left} дн.*\n"
                 f"📸 Анализов сегодня: {used}\n"
-                f"🔥 Ккал сегодня: {kcal_str}\n"
-                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})",
+                f"🔥 Ккал: {kcal_str}\n"
+                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})"
+                f"{streak_block}",
                 parse_mode="Markdown",
             )
         elif status == "beta" and user.get("trial_expires_at"):
-            from datetime import datetime
-
             trial_dt = datetime.fromisoformat(user["trial_expires_at"])
             trial_exp = trial_dt.strftime("%d.%m.%Y")
             days_left = max((trial_dt - datetime.utcnow()).days, 0)
@@ -1050,7 +1161,8 @@ async def main():
                 f"📅 До {trial_exp} — осталось *{days_left} дн.*\n"
                 f"📊 Анализов: {used}/{BETA_DAILY_LIMIT}\n"
                 f"🔥 Ккал: {kcal_str}\n"
-                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})",
+                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})"
+                f"{streak_block}",
                 parse_mode="Markdown",
             )
         else:
@@ -1058,16 +1170,15 @@ async def main():
                 f"⏰ *Подписка истекла*\n"
                 f"📊 Анализов сегодня: {used}\n"
                 f"🔥 Ккал: {kcal_str}\n"
-                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})\n\n"
+                f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})"
+                f"{streak_block}\n\n"
                 f"Оформи подписку — кнопка 💳 Подписка",
                 parse_mode="Markdown",
             )
 
     async def show_ref(message: Message):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         ok, reason = access_check(user)
         if not ok:
@@ -1085,11 +1196,37 @@ async def main():
             reply_markup=ref_keyboard(uid),
         )
 
+    async def show_weight(message: Message):
+        uid = message.from_user.id
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+        user = get_user(uid)
+        ok, reason = access_check(user)
+        if not ok:
+            await deny(message, reason)
+            return
+
+        history = get_weight_history(uid, days=30)
+        if history:
+            current_w = history[-1][1]
+            lines = [f"⚖️ *История веса (30 дней)*\n\nТекущий: *{current_w} кг*\n"]
+            for d, w in history[-7:]:
+                lines.append(f"  {d}: {w} кг")
+            if len(history) >= 2:
+                diff = round(history[-1][1] - history[0][1], 1)
+                sign = "+" if diff > 0 else ""
+                lines.append(f"\n📉 Изменение за период: *{sign}{diff} кг*")
+            lines.append("\nВведи новый вес (кг), или /cancel для отмены:")
+            await message.answer("\n".join(lines), parse_mode="Markdown")
+        else:
+            await message.answer(
+                "⚖️ *Трекер веса*\n\nЗаписей пока нет.\n\nВведи свой текущий вес в кг (например: 75.5):",
+                parse_mode="Markdown",
+            )
+        user_states[uid] = {"state": STATES["WEIGHT_LOG"], "data": {}}
+
     async def do_buy(message: Message, bot: Bot):
         uid = message.from_user.id
-        upsert_user(
-            uid, message.from_user.username or "", message.from_user.first_name or ""
-        )
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
         ok, reason = access_check(user)
         if not ok:
@@ -1098,7 +1235,7 @@ async def main():
         await bot.send_invoice(
             chat_id=uid,
             title="CalorieBot — 30 дней",
-            description="✅ Безлимит  ✅ Трекер калорий  ✅ Точный расчёт КБЖУ",
+            description="✅ Безлимит  ✅ Трекер калорий  ✅ Точный расчёт КБЖУ  🔥 Стрики",
             payload=f"sub_30d_{uid}",
             currency="XTR",
             prices=[LabeledPrice(label="Подписка 30 дней", amount=SUB_PRICE_STARS)],
@@ -1115,7 +1252,9 @@ async def main():
             name = (u["first_name"] or "").replace("_", " ").replace("*", "").replace("`", "")
             un = u["username"] or ""
             label = f"{name} (@{un})" if un else f"{name} (id{u['telegram_id']})"
-            lines.append(f"{icons.get(u['status'], '❓')} {label} — {u['telegram_id']}")
+            streak = u.get("streak_days", 0)
+            streak_icon = f" 🔥{streak}" if streak > 1 else ""
+            lines.append(f"{icons.get(u['status'], '❓')} {label} — {u['telegram_id']}{streak_icon}")
         await message.answer("\n".join(lines))
 
     async def show_stats(message: Message):
@@ -1124,12 +1263,12 @@ async def main():
             f"📈 *Статистика*\n\n"
             f"👥 Всего: {s['total_users']}  (⏳{s['pending']} ✅{s['beta']} 💎{s['paid']} 🚫{s['blocked']})\n"
             f"📸 Сегодня: {s['analyses_today']}  |  Всего: {s['analyses_total']}\n"
+            f"📅 Активных за 7 дней: {s['wau']}\n"
             f"🔗 Реф. оплат: {s['referrals_paid']}",
             parse_mode="Markdown",
         )
 
-    # ─────────── Admin команды (для совместимости) ───────────
-
+    # ── Admin команды ────────────────────────────────────────────────────────
     def is_admin(m: Message) -> bool:
         return m.from_user.id == ADMIN_ID
 
@@ -1152,12 +1291,9 @@ async def main():
             return
         approve_user(target_id, trial_days=3)
         approved = get_user(target_id)
-        from datetime import datetime
-
         trial_exp = (
             datetime.fromisoformat(approved["trial_expires_at"]).strftime("%d.%m.%Y")
-            if approved["trial_expires_at"]
-            else "?"
+            if approved["trial_expires_at"] else "?"
         )
         await message.answer(f"✅ {user_label(user)} одобрен (триал до {trial_exp}).")
         try:
@@ -1167,7 +1303,7 @@ async def main():
                 f"🎁 *Бесплатный период:* 3 дня, до {trial_exp}\n"
                 f"📸 До {BETA_DAILY_LIMIT} анализов в день\n\n"
                 f"Отправь фото еды — посчитаю калории!\n\n"
-                f"📏 *Совет:* фотографируй еду с расстояния *10–15 см* — так распознавание точнее.",
+                f"📏 *Совет:* фотографируй еду с расстояния *10–15 см* — так точнее.",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(target_id == ADMIN_ID),
             )
@@ -1215,8 +1351,6 @@ async def main():
             await message.answer("Пользователь не найден.")
             return
         activate_subscription(target_id, days)
-        from datetime import datetime, timedelta
-
         exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
         await message.answer(f"💎 {user_label(user)} — подписка до {exp}.")
         try:
@@ -1246,13 +1380,9 @@ async def main():
             await message.answer("Нет пользователей.")
             return
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
-        lines = [
-            f"👥 Пользователи{' (' + status_filter + ')' if status_filter else ''}:\n"
-        ]
+        lines = [f"👥 Пользователи{' (' + status_filter + ')' if status_filter else ''}:\n"]
         for u in users[:30]:
-            lines.append(
-                f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`"
-            )
+            lines.append(f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`")
         await message.answer("\n".join(lines), parse_mode="Markdown")
 
     @dp.message(Command("myid"))
@@ -1276,7 +1406,7 @@ async def main():
                 reply_markup=main_keyboard(uid == ADMIN_ID),
             )
         else:
-            await message.answer("Нечего отменять.")
+            await message.answer("Нечего отменять.", reply_markup=main_keyboard(uid == ADMIN_ID))
 
     log.info("CalorieBot запущен.")
     await dp.start_polling(bot)
