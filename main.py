@@ -1450,10 +1450,16 @@ async def main():
             d["activity"] = activity
 
             gender    = d.get("gender", "m")
-            age       = d.get("age", 25)
-            weight    = d.get("weight", 70.0)
-            height    = d.get("height", 170.0)
+            age       = int(d.get("age", 25))
+            weight    = float(d.get("weight", 70.0))
+            height    = float(d.get("height", 170.0))
             goal_type = d.get("goal_type", "track")
+
+            # Read user's stored goal_type as fallback if not in state data
+            if goal_type == "track":
+                stored = get_user(uid)
+                if stored and stored.get("goal_type") and stored["goal_type"] != "track":
+                    goal_type = stored["goal_type"]
 
             tdee, protein = calc_tdee(gender, age, weight, height, activity, goal_type)
 
@@ -1468,36 +1474,42 @@ async def main():
             )
 
             is_onboarding = (
-                d.get("_from_onboard")
-                or state_obj.get("state") == STATES["ONBOARD_WAIT_ACTIVITY"]
+                d.get("_from_onboard") is not False
+                and (d.get("_from_onboard") or state_obj.get("state") == STATES["ONBOARD_WAIT_ACTIVITY"])
             )
             user_states.pop(uid, None)
+            is_admin = uid == ADMIN_ID
+
+            result_text = (
+                f"🔥 *Готово!*\n\n"
+                f"Твоя цель:\n"
+                f"🎯 *{tdee} ккал* в день\n"
+                f"💪 *{protein} г белка*\n\n"
+                f"Теперь просто отправляй фото еды 📸"
+            ) if is_onboarding else (
+                f"✅ *Норма обновлена!*\n\n"
+                f"🎯 *{tdee} ккал* в день\n"
+                f"💪 Белок: *{protein} г*"
+            )
 
             if is_onboarding:
                 mark_onboarded(uid)
-                is_admin = uid == ADMIN_ID
-                await callback.message.edit_text(
-                    f"🔥 *Готово!*\n\n"
-                    f"Твоя цель:\n"
-                    f"🎯 *{tdee} ккал* в день\n"
-                    f"💪 *{protein} г белка*\n\n"
-                    f"Теперь просто отправляй фото еды 📸",
-                    parse_mode="Markdown",
-                )
-                await bot.send_message(uid, "Главное меню 👇", reply_markup=main_keyboard(is_admin))
-            else:
-                await callback.message.edit_text(
-                    f"✅ *Норма установлена!*\n\n"
-                    f"🎯 {tdee} ккал/день\n"
-                    f"💪 Белок: {protein}г",
-                    parse_mode="Markdown",
-                )
+
+            # Try to edit the message; fall back to new message if it fails
+            try:
+                await callback.message.edit_text(result_text, parse_mode="Markdown")
+            except Exception:
+                await callback.message.answer(result_text, parse_mode="Markdown")
+
+            await bot.send_message(uid, "Меню 👇", reply_markup=main_keyboard(is_admin))
+
         except Exception as e:
-            log.error(f"cb_activity error uid={uid}: {e}")
+            log.error(f"cb_activity error uid={uid}: {e}", exc_info=True)
             user_states.pop(uid, None)
-            await callback.message.answer(
-                "⚠️ Что-то пошло не так. Попробуй заново — нажми /start",
-            )
+            try:
+                await callback.message.edit_text("⚠️ Ошибка расчёта. Попробуй ещё раз — нажми /start")
+            except Exception:
+                await callback.message.answer("⚠️ Ошибка расчёта. Попробуй ещё раз — нажми /start")
 
     # ── Profile inline callbacks ───────────────────────────────────────────────
     @dp.callback_query(F.data == "profile_goal")
@@ -2271,8 +2283,14 @@ async def main():
                 await message.answer("⚠️ Введи возраст от 10 до 100:")
                 return
             state_data["data"]["age"] = age
+            state_data["state"] = STATES["ONBOARD_WAIT_ACTIVITY"]
+            state_data.setdefault("data", {})["_from_onboard"] = False
             user_states[uid] = state_data
-            await message.answer("Уровень активности:", reply_markup=activity_keyboard())
+            await message.answer(
+                f"*{age} лет* — записал ✅\n\nПоследний шаг — уровень активности:",
+                parse_mode="Markdown",
+                reply_markup=activity_keyboard(),
+            )
             return
 
         # ── Correct entry ──────────────────────────────────────────────────────
