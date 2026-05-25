@@ -561,12 +561,17 @@ def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
 
 
 def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
-    """Inline keyboard: compact ✏️ N / 🗑 N pairs; food names live in message text."""
+    """One row per entry: [Название — ккал (label)] [✏️] [🗑]."""
     rows = []
-    for i, e in enumerate(entries, 1):
+    for e in entries:
+        kcal = e["calories"] or 0
+        name = (e.get("food_name") or "блюдо").strip()
+        # Truncate name so total label stays readable; ✏️/🗑 stay narrow on the right
+        label = f"{name[:28]} — {kcal} ккал" if len(name) <= 28 else f"{name[:26]}… — {kcal} ккал"
         rows.append([
-            InlineKeyboardButton(text=f"✏️ {i}", callback_data=f"edit_e:{e['id']}"),
-            InlineKeyboardButton(text=f"🗑 {i}", callback_data=f"del_e:{e['id']}"),
+            InlineKeyboardButton(text=label,  callback_data="noop"),
+            InlineKeyboardButton(text="✏️",   callback_data=f"edit_e:{e['id']}"),
+            InlineKeyboardButton(text="🗑",   callback_data=f"del_e:{e['id']}"),
         ])
     rows.append([InlineKeyboardButton(text="Сбросить весь день", callback_data="reset_day")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1811,13 +1816,11 @@ async def main():
             )
             return
         total = sum(e["calories"] or 0 for e in entries)
-        lines = []
-        for i, e in enumerate(entries, 1):
-            name = (e.get("food_name") or "блюдо").strip()
-            kcal = e["calories"] or 0
-            lines.append(f"{i}. {name} — {kcal} ккал")
-        text = f"*Дневник — {total} ккал*\n\n" + "\n".join(lines)
-        await send_fn(text, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
+        await send_fn(
+            f"*Дневник — {total} ккал*",
+            parse_mode="Markdown",
+            reply_markup=diary_keyboard(entries),
+        )
 
     @dp.callback_query(F.data == "noop")
     async def cb_noop(callback: CallbackQuery):
