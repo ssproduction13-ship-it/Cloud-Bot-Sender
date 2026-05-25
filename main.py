@@ -7,7 +7,7 @@ import logging
 import base64
 import urllib.parse
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from openai import AsyncOpenAI
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
@@ -62,11 +62,14 @@ from db import (
     get_streak_users_no_log_today,
     add_water_log,
     get_water_today,
+    reset_water_today,
     get_users_by_segment,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+_utcnow = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
 
 BOT_TOKEN     = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
@@ -131,19 +134,19 @@ def _get_state(uid: int) -> dict:
     if not s:
         return {}
     ts = s.get("_ts")
-    if ts and (datetime.utcnow() - ts).total_seconds() > _STATE_TTL_SECONDS:
+    if ts and (_utcnow() - ts).total_seconds() > _STATE_TTL_SECONDS:
         user_states.pop(uid, None)
         return {}
     return s
 
 
 def _set_state(uid: int, state: str, data: dict | None = None):
-    user_states[uid] = {"state": state, "data": data or {}, "_ts": datetime.utcnow()}
+    user_states[uid] = {"state": state, "data": data or {}, "_ts": _utcnow()}
 
 
 def _set_onboard_state(uid: int, state: str, data: dict) -> None:
     """Write onboarding state to memory AND persist to DB so restarts don't lose progress."""
-    user_states[uid] = {"state": state, "data": data, "_ts": datetime.utcnow()}
+    user_states[uid] = {"state": state, "data": data, "_ts": _utcnow()}
     try:
         save_onboard_state(uid, state, data)
     except Exception as exc:
@@ -162,7 +165,7 @@ def _try_restore_onboard(uid: int) -> None:
         user_states[uid] = {
             "state": persisted["state"],
             "data": persisted["data"],
-            "_ts": datetime.utcnow(),
+            "_ts": _utcnow(),
         }
         log.info(f"Restored onboard state uid={uid} state={persisted['state']}")
 
@@ -192,7 +195,7 @@ def _calc_calorie_goal(gender, age, height_cm, weight_kg, goal_type, activity="m
     return round(kcal_goal), protein_goal
 
 
-  # ── Кнопки меню ──────────────────────────────────────────────────────────────
+# ── Кнопки меню ──────────────────────────────────────────────────────────────
 BTN_PHOTO    = "📸 Анализ фото"
 BTN_MANUAL   = "✍️ Вручную"
 BTN_PROGRESS = "📊 Мой прогресс"
@@ -534,11 +537,6 @@ def daily_progress_text(uid: int, user: dict | None = None,
         if streak > 0 else ""
     )
 
-    streak_line = (
-        f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
-        if streak > 0 else ""
-    )
-
     if not goal:
         return f"\n\n📊 *Сегодня: {total} ккал*{streak_line}"
 
@@ -601,21 +599,21 @@ def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
 
 
 def premium_keyboard() -> InlineKeyboardMarkup:
-      return InlineKeyboardMarkup(inline_keyboard=[
-          [InlineKeyboardButton(
-              text=f"💳 {SUB_PRICE_STARS} ⭐ — 1 месяц",
-              callback_data="buy_sub:30",
-          )],
-          [InlineKeyboardButton(
-              text=f"💰 {SUB_PRICE_3M} ⭐ — 3 месяца (−20%)",
-              callback_data="buy_sub:90",
-          )],
-          [InlineKeyboardButton(
-              text=f"🏆 {SUB_PRICE_12M} ⭐ — 12 месяцев (−45%)",
-              callback_data="buy_sub:365",
-          )],
-          [InlineKeyboardButton(text="👥 Получить бесплатно (реферал)", callback_data="ref_screen")],
-      ])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"💳 {SUB_PRICE_STARS} ⭐ — 1 месяц",
+            callback_data="buy_sub:30",
+        )],
+        [InlineKeyboardButton(
+            text=f"💰 {SUB_PRICE_3M} ⭐ — 3 месяца (−20%)",
+            callback_data="buy_sub:90",
+        )],
+        [InlineKeyboardButton(
+            text=f"🏆 {SUB_PRICE_12M} ⭐ — 12 месяцев (−45%)",
+            callback_data="buy_sub:365",
+        )],
+        [InlineKeyboardButton(text="👥 Получить бесплатно (реферал)", callback_data="ref_screen")],
+    ])
 
 
 
@@ -736,7 +734,7 @@ async def _deliver_analysis(
             await message.answer(fun)
 
     # AI nutrition advice for premium users
-    if (not check_subscription_expired(uid)) and user.get("status") == "paid":
+    if (not check_subscription_expired(user)) and user.get("status") == "paid":
         try:
             goal = user.get("daily_goal")
             goal_protein = user.get("protein_goal")
@@ -1036,7 +1034,7 @@ async def main():
             if not user or user["status"] in ("pending", "beta", "blocked"):
                 approve_user(uid, trial_days=3650)
             elif user["status"] == "paid":
-                if not user["expires_at"] or datetime.fromisoformat(user["expires_at"]) < datetime.utcnow():
+                if not user["expires_at"] or datetime.fromisoformat(user["expires_at"]) < _utcnow():
                     activate_subscription(uid, 3650)
         elif is_new_user:
             # Auto-approve all new users with 7-day trial — no waiting required
@@ -1341,14 +1339,14 @@ async def main():
         if u.get("trial_expires_at"):
             try:
                 dt = datetime.fromisoformat(u["trial_expires_at"])
-                dl = max((dt - datetime.utcnow()).days, 0)
+                dl = max((dt - _utcnow()).days, 0)
                 lines.append(f"🎁 Триал: {dt.strftime('%d.%m.%Y')} ({dl} дн.)")
             except Exception:
                 pass
         if u.get("expires_at"):
             try:
                 dt = datetime.fromisoformat(u["expires_at"])
-                dl = max((dt - datetime.utcnow()).days, 0)
+                dl = max((dt - _utcnow()).days, 0)
                 lines.append(f"💎 Подписка: {dt.strftime('%d.%m.%Y')} ({dl} дн.)")
             except Exception:
                 pass
@@ -1389,7 +1387,7 @@ async def main():
         user_states[callback.from_user.id] = {
             "state": STATES["ADMIN_BROADCAST"],
             "data": {"segment": segment, "segment_label": label, "segment_count": len(users)},
-            "_ts": datetime.utcnow(),
+            "_ts": _utcnow(),
         }
         await callback.message.answer(
             f"📡 *Рассылка → {label}*\n"
@@ -1673,7 +1671,7 @@ async def main():
         if status == "paid" and not check_subscription_expired(uid):
             exp_dt = datetime.fromisoformat(user["expires_at"])
             exp = exp_dt.strftime("%d.%m.%Y")
-            dl = max((exp_dt - datetime.utcnow()).days, 0)
+            dl = max((exp_dt - _utcnow()).days, 0)
             await send_fn(
                 f"💎 *Подписка активна*\n"
                 f"📅 До {exp} — осталось *{dl} дн.*\n"
@@ -1686,7 +1684,7 @@ async def main():
         elif status == "beta" and user.get("trial_expires_at"):
             trial_dt = datetime.fromisoformat(user["trial_expires_at"])
             trial_exp = trial_dt.strftime("%d.%m.%Y")
-            dl = max((trial_dt - datetime.utcnow()).days, 0)
+            dl = max((trial_dt - _utcnow()).days, 0)
             await send_fn(
                 f"🎁 *Пробный период*\n"
                 f"📅 До {trial_exp} — осталось *{dl} дн.*\n"
@@ -2162,7 +2160,7 @@ async def main():
         except Exception:
             days = SUB_DAYS
         activate_subscription(uid, days)
-        exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
+        exp = (_utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
         plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
         await message.answer(
             f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
@@ -2420,7 +2418,7 @@ async def main():
         if is_premium:
             exp_dt = datetime.fromisoformat(user["expires_at"])
             exp = exp_dt.strftime("%d.%m.%Y")
-            dl = max((exp_dt - datetime.utcnow()).days, 0)
+            dl = max((exp_dt - _utcnow()).days, 0)
             await send_fn(
                 f"💎 *Подписка активна*\n\n"
                 f"📅 До *{exp}* — осталось *{dl} дн.*\n\n"
