@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import sys
+import random
 import logging
 import base64
 import urllib.parse
@@ -330,7 +331,6 @@ def detect_fun_reaction(food_name_lower: str, kcal: int | None) -> str | None:
                 "🍔 Зафиксировано. Завтра компенсируем лёгким ужином 💪",
                 "🍕 Калорийная бомба принята. Главное — не делать из этого систему 😅",
             ]
-            import random
             return random.choice(reactions)
     for kw in SUGAR_KEYWORDS:
         if kw in food_name_lower:
@@ -450,7 +450,7 @@ def profile_keyboard(uid: int, has_goal: bool) -> InlineKeyboardMarkup:
     goal_btn_text = "✏️ Изменить цель" if has_goal else "🎯 Установить цель"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=goal_btn_text, callback_data="profile_goal")],
-        [InlineKeyboardButton(text="⚖️ Записать вес", callback_data="profile_weight")],
+        [InlineKeyboardButton(text="⚖️ Записать вес", callback_data="weight_opt")],
         [InlineKeyboardButton(text="📈 Неделя", callback_data="profile_week")],
         [InlineKeyboardButton(text="ℹ️ Статус подписки", callback_data="profile_status")],
     ])
@@ -849,9 +849,14 @@ async def main():
         approve_user(target_id, trial_days=3)
         await message.answer(f"✅ Пользователь {target_id} одобрен (3 дня).")
         try:
-            await bot.send_message(target_id,
-                "✅ *Доступ открыт!*\n\nОтправляй фото еды — считаю калории 📸",
-                parse_mode="Markdown", reply_markup=main_keyboard(False))
+            u = get_user(target_id)
+            if u and not u.get("onboarded"):
+                user_name = u.get("first_name") or "друг"
+                await start_onboarding(bot, target_id, user_name)
+            else:
+                await bot.send_message(target_id,
+                    "✅ *Доступ открыт!*\n\nОтправляй фото еды — считаю калории 📸",
+                    parse_mode="Markdown", reply_markup=main_keyboard(False))
         except Exception:
             pass
 
@@ -1075,21 +1080,27 @@ async def main():
             return
         target_id = int(callback.data.split("_")[1])
         approve_user(target_id, trial_days=3)
-        await callback.answer(f"✅ Одобрено")
+        await callback.answer("✅ Одобрено")
         try:
-            await bot.send_message(
-                target_id,
-                "✅ *Доступ открыт! Добро пожаловать!* 🎉\n\n"
-                "Отправь фото еды — и я посчитаю калории за секунды 📸",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(False),
-            )
-        except Exception:
-            pass
+            u = get_user(target_id)
+            # Trigger onboarding if not yet completed
+            if u and not u.get("onboarded"):
+                user_name = u.get("first_name") or "друг"
+                await start_onboarding(bot, target_id, user_name)
+            else:
+                await bot.send_message(
+                    target_id,
+                    "✅ *Доступ открыт! Добро пожаловать!* 🎉\n\n"
+                    "Отправь фото еды — и я посчитаю калории за секунды 📸",
+                    parse_mode="Markdown",
+                    reply_markup=main_keyboard(False),
+                )
+        except Exception as e:
+            log.warning(f"cb_approve send: {e}")
         try:
             u = get_user(target_id)
             await callback.message.edit_text(
-                f"✅ Одобрен: {_fmt_user_card(u)}", parse_mode="Markdown"
+                f"✅ Одобрен:\n{_fmt_user_card(u)}", parse_mode="Markdown"
             )
         except Exception:
             pass
@@ -1171,10 +1182,9 @@ async def main():
         label = labels.get(goal_type, goal_type)
 
         if goal_type == "track":
-            # Skip detailed calculation, just activate
-            user_states[uid] = {"state": "onboard_done", "data": {"goal_type": goal_type}}
+            # Skip detailed calculation — mark onboarded and go straight to menu
             mark_onboarded(uid)
-            user = get_user(uid)
+            user_states.pop(uid, None)
             is_admin = uid == ADMIN_ID
             await callback.message.edit_text(
                 f"✅ *{label}* — запомнил!\n\n"
@@ -1313,6 +1323,29 @@ async def main():
             parse_mode="Markdown",
             reply_markup=goal_ask_keyboard(),
         )
+
+    @dp.callback_query(F.data == "weight_opt")
+    async def cb_weight_opt(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        user = get_user(uid)
+        last_weight = f"  (последний: *{user['weight_kg']} кг*)" if user and user.get("weight_kg") else ""
+        await callback.message.answer(
+            f"⚖️ *Хочешь записать вес сегодня?*{last_weight}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Да", callback_data="profile_weight"),
+                InlineKeyboardButton(text="⏭ Не сегодня", callback_data="weight_skip"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data == "weight_skip")
+    async def cb_weight_skip(callback: CallbackQuery):
+        await callback.answer("Ок, в следующий раз 👍")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
 
     @dp.callback_query(F.data == "profile_weight")
     async def cb_profile_weight(callback: CallbackQuery):
