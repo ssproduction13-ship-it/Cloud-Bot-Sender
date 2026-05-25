@@ -227,6 +227,26 @@ def _parse_macros(raw: str):
     return display, kcal, protein, fat, carbs, food_name
 
 
+def _validate_analysis(display, kcal, protein, fat, carbs) -> tuple[bool, str | None]:
+    """Sanity-check AI response before sending to user."""
+    if kcal is None:
+        return False, "⚠️ Не удалось распознать калории. Опиши блюдо подробнее или введи вручную."
+    if not (20 <= kcal <= 6000):
+        return False, f"⚠️ Получилось {kcal} ккал — похоже на ошибку. Попробуй ещё раз."
+    if protein is not None and not (0 <= protein <= 500):
+        return False, "⚠️ Некорректные данные по белку. Попробуй ещё раз."
+    if fat is not None and not (0 <= fat <= 500):
+        return False, "⚠️ Некорректные данные по жирам. Попробуй ещё раз."
+    if carbs is not None and not (0 <= carbs <= 1000):
+        return False, "⚠️ Некорректные данные по углеводам. Попробуй ещё раз."
+    if not display or len(display.strip()) < 10:
+        return False, "⚠️ Пустой ответ от AI. Попробуй ещё раз."
+    bad = ["не ед", "error", "sorry", "cannot", "не могу", "не знаю", "unable", "не понимаю"]
+    if any(p in display.lower() for p in bad):
+        return False, "🙅 Это не похоже на еду. Введи название блюда или продукта."
+    return True, None
+
+
 async def analyze_food_photo(photo_bytes: bytes):
     b64 = base64.b64encode(photo_bytes).decode()
     vision = await openai_client.chat.completions.create(
@@ -455,17 +475,13 @@ def daily_progress_text(uid: int, user: dict | None = None,
         if streak > 0 else ""
     )
 
-    score = calc_daily_score(total, macros["protein"], macros["fat"], macros["carbs"],
-                             goal, goal_protein, meals)
-    fs = format_score(score)
-    score_line = f"\n🍽 Balance Score: *{fs}/10*" if total > 0 else ""
     streak_line = (
         f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
         if streak > 0 else ""
     )
 
     if not goal:
-        return f"\n\n📊 *Сегодня: {total} ккал*{score_line}{streak_line}"
+        return f"\n\n📊 *Сегодня: {total} ккал*{streak_line}"
 
     remaining = max(goal - total, 0)
     over = total - goal
@@ -474,7 +490,7 @@ def daily_progress_text(uid: int, user: dict | None = None,
     return (
         f"\n\n📊 *Сегодня: {total} / {goal} ккал*\n"
         f"{status_line}"
-        f"{score_line}{streak_line}"
+        f"{streak_line}"
     )
 
 
@@ -504,7 +520,8 @@ def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
 def progress_inline_keyboard() -> InlineKeyboardMarkup:
     """Small inline keyboard shown below the progress message."""
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📋 Записи за сегодня", callback_data="diary"),
+        InlineKeyboardButton(text="📋 Дневник", callback_data="diary"),
+        InlineKeyboardButton(text="📅 7 дней", callback_data="history7"),
     ]])
 
 
@@ -643,6 +660,14 @@ async def _deliver_analysis(
     thinking_msg,
 ):
     """Record, streak, send result, fun reaction, milestone. DRY for all 3 entry points."""
+    ok, err_msg = _validate_analysis(display, kcal, protein, fat, carbs)
+    if not ok:
+        try:
+            await thinking_msg.delete()
+        except Exception:
+            pass
+        await message.answer(err_msg)
+        return
     entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
     streak, milestone = update_streak(uid, user=user) if kcal else (0, False)
 
@@ -1674,6 +1699,38 @@ async def main():
     @dp.callback_query(F.data == "noop")
     async def cb_noop(callback: CallbackQuery):
         await callback.answer()
+
+    @dp.callback_query(F.data == "history7")
+    async def cb_history7(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        user = get_user(uid)
+        goal = user.get("daily_goal") if user else None
+        stats = get_weekly_stats(uid)
+        days = stats["dates"]
+        daily = stats["daily"]
+        day_names = ["Пн","Вт","Ср","Чт","Пт","Сб","Вс"]
+        lines = []
+        for i, (d, data) in enumerate(zip(days, daily)):
+            from datetime import date as _date
+            dt = _date.fromisoformat(d)
+            dn = day_names[dt.weekday()]
+            kcal = data["kcal"]
+            if kcal == 0:
+                lines.append(f"{dn} {dt.strftime('%d.%m')}  —")
+            elif goal:
+                pct = round(kcal / goal * 100)
+                bar = "●" * min(pct // 20, 5)
+                lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal}* / {goal}  {bar}")
+            else:
+                lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal} ккал*")
+        avg = stats["avg_kcal"]
+        logged = stats["logged_days"]
+        avg_line = f"\nСредн: *{avg} ккал/день* · {logged}/7 дней залогировано" if logged else ""
+        await callback.message.answer(
+            f"📅 *История за 7 дней*\n\n" + "\n".join(lines) + avg_line,
+            parse_mode="Markdown",
+        )
 
     @dp.callback_query(F.data == "diary")
     async def cb_diary(callback: CallbackQuery):
