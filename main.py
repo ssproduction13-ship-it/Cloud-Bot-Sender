@@ -1733,28 +1733,28 @@ async def main():
         _set_onboard_state(uid, "ob_goal", {})
 
     # ── buy_sub callback ───────────────────────────────────────────────────────
-      @dp.callback_query(F.data.startswith("buy_sub"))
-      async def cb_buy_sub(callback: CallbackQuery):
-          uid = callback.from_user.id
-          await callback.answer()
-          parts = callback.data.split(":")
-          plan = parts[1] if len(parts) > 1 else "30"
-          plans = {
-              "30":  (SUB_PRICE_STARS, SUB_DAYS,    "1 месяц",    "Premium 30 дней"),
-              "90":  (SUB_PRICE_3M,   SUB_DAYS_3M,  "3 месяца",   "Premium 90 дней"),
-              "365": (SUB_PRICE_12M,  SUB_DAYS_12M, "12 месяцев", "Premium 365 дней"),
-          }
-          price, days, label, pay_label = plans.get(plan, plans["30"])
-          await bot.send_invoice(
-              chat_id=uid,
-              title=f"CalorieBot Premium — {label}",
-              description="Безлимит · Трекер калорий · КБЖУ · Стрики · Недельные отчёты · AI-план питания",
-              payload=f"sub_{days}d_{uid}",
-              currency="XTR",
-              prices=[LabeledPrice(label=pay_label, amount=price)],
-          )
+    @dp.callback_query(F.data.startswith("buy_sub"))
+    async def cb_buy_sub(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        parts = callback.data.split(":")
+        plan = parts[1] if len(parts) > 1 else "30"
+        plans = {
+            "30":  (SUB_PRICE_STARS, SUB_DAYS,    "1 месяц",    "Premium 30 дней"),
+            "90":  (SUB_PRICE_3M,   SUB_DAYS_3M,  "3 месяца",   "Premium 90 дней"),
+            "365": (SUB_PRICE_12M,  SUB_DAYS_12M, "12 месяцев", "Premium 365 дней"),
+        }
+        price, days, label, pay_label = plans.get(plan, plans["30"])
+        await bot.send_invoice(
+            chat_id=uid,
+            title=f"CalorieBot Premium — {label}",
+            description="Безлимит · Трекер калорий · КБЖУ · Стрики · Недельные отчёты · AI-план питания",
+            payload=f"sub_{days}d_{uid}",
+            currency="XTR",
+            prices=[LabeledPrice(label=pay_label, amount=price)],
+        )
 
-      @dp.callback_query(F.data == "ref_screen")
+    @dp.callback_query(F.data == "ref_screen")
     async def cb_ref_screen(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
@@ -2099,98 +2099,98 @@ async def main():
 
     # ── Payment ────────────────────────────────────────────────────────────────
     # ── show_premium callback ───────────────────────────────────────────────────
-      @dp.callback_query(F.data == "show_premium")
-      async def cb_show_premium(callback: CallbackQuery):
-          uid = callback.from_user.id
-          await callback.answer()
-          user = get_user(uid)
-          await _show_premium_screen(callback.message.answer, uid, user)
+    @dp.callback_query(F.data == "show_premium")
+    async def cb_show_premium(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        user = get_user(uid)
+        await _show_premium_screen(callback.message.answer, uid, user)
 
-      # ── water tracker callbacks ─────────────────────────────────────────────────
-      @dp.callback_query(F.data == "water_add")
-      async def cb_water_add(callback: CallbackQuery):
-          uid = callback.from_user.id
-          await callback.answer()
-          glasses = add_water_log(uid)
-          filled = min(glasses, WATER_GOAL)
-          bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
-          pct = round(glasses / WATER_GOAL * 100)
-          status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
-          try:
-              await callback.message.edit_text(
-                  f"💧 *Вода сегодня*\n\n"
-                  f"{bar}\n"
-                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
-                  f"{status}",
-                  parse_mode="Markdown",
-                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                      [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
-                  ]),
-              )
-          except Exception:
-              pass
+    # ── water tracker callbacks ─────────────────────────────────────────────────
+    @dp.callback_query(F.data == "water_add")
+    async def cb_water_add(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        glasses = add_water_log(uid)
+        filled = min(glasses, WATER_GOAL)
+        bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
+        pct = round(glasses / WATER_GOAL * 100)
+        status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
+        try:
+            await callback.message.edit_text(
+                f"💧 *Вода сегодня*\n\n"
+                f"{bar}\n"
+                f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
+                f"{status}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                    [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
+                ]),
+            )
+        except Exception:
+            pass
 
-      @dp.callback_query(F.data == "water_reset")
-      async def cb_water_reset(callback: CallbackQuery):
-          uid = callback.from_user.id
-          await callback.answer("Сброшено")
-          reset_water_today(uid)
-          try:
-              await callback.message.edit_text(
-                  f"💧 *Вода сегодня*\n\n{'⬜' * WATER_GOAL}\n*0 / {WATER_GOAL} стаканов*",
-                  parse_mode="Markdown",
-                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                  ]),
-              )
-          except Exception:
-              pass
+    @dp.callback_query(F.data == "water_reset")
+    async def cb_water_reset(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer("Сброшено")
+        reset_water_today(uid)
+        try:
+            await callback.message.edit_text(
+                f"💧 *Вода сегодня*\n\n{'⬜' * WATER_GOAL}\n*0 / {WATER_GOAL} стаканов*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                ]),
+            )
+        except Exception:
+            pass
 
-  
+
     @dp.pre_checkout_query()
     async def pre_checkout(query: PreCheckoutQuery):
         await query.answer(ok=True)
 
     @dp.message(F.successful_payment)
-      async def payment_done(message: Message):
-          uid = message.from_user.id
-          payload = message.successful_payment.invoice_payload
-          # payload format: sub_Xd_UID
-          try:
-              days = int(payload.split("_")[1].rstrip("d"))
-          except Exception:
-              days = SUB_DAYS
-          activate_subscription(uid, days)
-          exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
-          plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
-          await message.answer(
-              f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
-              f"📅 Подписка *{plan_label}* — до *{exp}*\n"
-              f"📸 Безлимитные анализы разблокированы\n"
-              f"🍽 AI-план питания доступен\n"
-              f"Отправляй фото еды — я всегда рядом 🚀",
-              parse_mode="Markdown",
-              reply_markup=main_keyboard(uid == ADMIN_ID),
-          )
-          referrer_id = mark_referral_paid(uid)
-          if referrer_id:
-              activate_subscription(referrer_id, REFERRAL_BONUS_DAYS)
-              try:
-                  ref_user = get_user(referrer_id)
-                  new_exp = (
-                      datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
-                      if ref_user and ref_user.get("expires_at") else "—"
-                  )
-                  await bot.send_message(
-                      referrer_id,
-                      f"🎁 Твой реферал оплатил! *+{REFERRAL_BONUS_DAYS} дней* → до *{new_exp}*",
-                      parse_mode="Markdown",
-                  )
-              except Exception as e:
-                  log.warning(f"referral notify: {e}")
-          user = get_user(uid)
-          await notify_admin(bot, f"💰 Оплата: {user_label(user)} · {plan_label} → до {exp}")
+    async def payment_done(message: Message):
+        uid = message.from_user.id
+        payload = message.successful_payment.invoice_payload
+        # payload format: sub_Xd_UID
+        try:
+            days = int(payload.split("_")[1].rstrip("d"))
+        except Exception:
+            days = SUB_DAYS
+        activate_subscription(uid, days)
+        exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
+        plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
+        await message.answer(
+            f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
+            f"📅 Подписка *{plan_label}* — до *{exp}*\n"
+            f"📸 Безлимитные анализы разблокированы\n"
+            f"🍽 AI-план питания доступен\n"
+            f"Отправляй фото еды — я всегда рядом 🚀",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(uid == ADMIN_ID),
+        )
+        referrer_id = mark_referral_paid(uid)
+        if referrer_id:
+            activate_subscription(referrer_id, REFERRAL_BONUS_DAYS)
+            try:
+                ref_user = get_user(referrer_id)
+                new_exp = (
+                    datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
+                    if ref_user and ref_user.get("expires_at") else "—"
+                )
+                await bot.send_message(
+                    referrer_id,
+                    f"🎁 Твой реферал оплатил! *+{REFERRAL_BONUS_DAYS} дней* → до *{new_exp}*",
+                    parse_mode="Markdown",
+                )
+            except Exception as e:
+                log.warning(f"referral notify: {e}")
+        user = get_user(uid)
+        await notify_admin(bot, f"💰 Оплата: {user_label(user)} · {plan_label} → до {exp}")
 
     # ── Menu text handlers ─────────────────────────────────────────────────────
     @dp.message(F.text.in_(MENU_BUTTONS))
