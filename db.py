@@ -381,6 +381,26 @@ def get_entries_today(telegram_id):
             return [dict(r) for r in cur.fetchall()]
 
 
+def delete_entry(entry_id: int):
+    """Delete a single usage entry by id."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM usage WHERE id=%s", (entry_id,))
+        conn.commit()
+
+
+def reset_today_entries(telegram_id: int):
+    """Delete all usage entries for today for a given user."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM usage WHERE telegram_id=%s AND date=%s",
+                (telegram_id, today),
+            )
+        conn.commit()
+
+
 def get_calories_for_date(telegram_id, date_str):
     with get_conn() as conn:
         with conn.cursor() as cur:
