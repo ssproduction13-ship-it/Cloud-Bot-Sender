@@ -32,7 +32,9 @@ def init_db():
                     weight_kg        REAL,
                     height_cm        REAL,
                     age              INTEGER,
-                    goal_type        TEXT DEFAULT 'track'
+                    goal_type        TEXT DEFAULT 'track',
+                    gender           TEXT,
+                    onboarded        INTEGER DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS usage (
@@ -43,7 +45,8 @@ def init_db():
                     calories    INTEGER,
                     protein_g   REAL,
                     fat_g       REAL,
-                    carbs_g     REAL
+                    carbs_g     REAL,
+                    food_name   TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS referrals (
@@ -73,6 +76,8 @@ def init_db():
                 ("height_cm",        "REAL"),
                 ("age",              "INTEGER"),
                 ("goal_type",        "TEXT DEFAULT 'track'"),
+                ("gender",           "TEXT"),
+                ("onboarded",        "INTEGER DEFAULT 0"),
             ]
             for col, definition in new_user_cols:
                 try:
@@ -84,6 +89,7 @@ def init_db():
                 ("protein_g", "REAL"),
                 ("fat_g",     "REAL"),
                 ("carbs_g",   "REAL"),
+                ("food_name", "TEXT"),
             ]
             for col, definition in new_usage_cols:
                 try:
@@ -149,19 +155,35 @@ def is_trial_expired(telegram_id):
     return datetime.utcnow() > datetime.fromisoformat(user["trial_expires_at"])
 
 
-def set_daily_goal(telegram_id, goal, protein_goal=None):
+def set_daily_goal(telegram_id, goal, protein_goal=None, goal_type=None,
+                   weight_kg=None, height_cm=None, age=None, gender=None):
     with get_conn() as conn:
         with conn.cursor() as cur:
+            fields = ["daily_goal=%s"]
+            vals = [goal]
             if protein_goal is not None:
-                cur.execute(
-                    "UPDATE users SET daily_goal=%s, protein_goal=%s WHERE telegram_id=%s",
-                    (goal, protein_goal, telegram_id),
-                )
-            else:
-                cur.execute(
-                    "UPDATE users SET daily_goal=%s WHERE telegram_id=%s",
-                    (goal, telegram_id),
-                )
+                fields.append("protein_goal=%s"); vals.append(protein_goal)
+            if goal_type is not None:
+                fields.append("goal_type=%s"); vals.append(goal_type)
+            if weight_kg is not None:
+                fields.append("weight_kg=%s"); vals.append(weight_kg)
+            if height_cm is not None:
+                fields.append("height_cm=%s"); vals.append(height_cm)
+            if age is not None:
+                fields.append("age=%s"); vals.append(age)
+            if gender is not None:
+                fields.append("gender=%s"); vals.append(gender)
+            vals.append(telegram_id)
+            cur.execute(
+                f"UPDATE users SET {', '.join(fields)} WHERE telegram_id=%s", vals
+            )
+        conn.commit()
+
+
+def mark_onboarded(telegram_id):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET onboarded=1 WHERE telegram_id=%s", (telegram_id,))
         conn.commit()
 
 
@@ -207,7 +229,6 @@ def get_all_users(status_filter=None):
 
 
 def get_active_users():
-    """Users with active subscription who logged food in last 7 days."""
     week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -227,7 +248,6 @@ def get_active_users():
 
 
 def update_streak(telegram_id) -> tuple[int, bool]:
-    """Update streak. Returns (current_streak, milestone_hit)."""
     today = datetime.utcnow().strftime("%Y-%m-%d")
     yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
@@ -266,15 +286,17 @@ def update_streak(telegram_id) -> tuple[int, bool]:
 # ── Usage & Macros ─────────────────────────────────────────────────────────
 
 
-def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None) -> int:
+def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
+                 food_name=None) -> int:
     now = datetime.utcnow()
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO usage (telegram_id, used_at, date, calories, protein_g, fat_g, carbs_g)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                """INSERT INTO usage
+                   (telegram_id, used_at, date, calories, protein_g, fat_g, carbs_g, food_name)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                 (telegram_id, now.isoformat(), now.strftime("%Y-%m-%d"),
-                 kcal, protein, fat, carbs),
+                 kcal, protein, fat, carbs, food_name),
             )
             entry_id = cur.fetchone()[0]
         conn.commit()
@@ -326,7 +348,25 @@ def get_daily_macros(telegram_id):
                 (telegram_id, today),
             )
             row = cur.fetchone()
-            return {"kcal": int(row[0]), "protein": round(row[1]), "fat": round(row[2]), "carbs": round(row[3])}
+            return {
+                "kcal": int(row[0]),
+                "protein": round(row[1]),
+                "fat": round(row[2]),
+                "carbs": round(row[3]),
+            }
+
+
+def get_entries_today(telegram_id):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, food_name, calories, protein_g, fat_g, carbs_g, used_at
+                   FROM usage WHERE telegram_id=%s AND date=%s
+                   ORDER BY used_at ASC""",
+                (telegram_id, today),
+            )
+            return [dict(r) for r in cur.fetchall()]
 
 
 def get_calories_for_date(telegram_id, date_str):
@@ -343,7 +383,6 @@ def get_calories_for_date(telegram_id, date_str):
 
 
 def get_weekly_stats(telegram_id):
-    """Stats for the last 7 days."""
     today = datetime.utcnow().date()
     days = [(today - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
 
@@ -389,7 +428,8 @@ def add_weight_log(telegram_id, weight_kg):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO weight_logs (telegram_id, weight_kg, logged_at, date) VALUES (%s, %s, %s, %s)",
+                "INSERT INTO weight_logs (telegram_id, weight_kg, logged_at, date)"
+                " VALUES (%s, %s, %s, %s)",
                 (telegram_id, weight_kg, now.isoformat(), today),
             )
             cur.execute(
@@ -428,19 +468,75 @@ def get_total_stats():
             paid = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM users WHERE status='blocked'")
             blocked = cur.fetchone()[0]
+
             today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            yesterday_str = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+            week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
             cur.execute("SELECT COUNT(*) FROM usage WHERE date=%s", (today_str,))
             today_a = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM usage")
             total_a = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM referrals WHERE paid=1")
             ref_paid = cur.fetchone()[0]
-            week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+            # DAU
             cur.execute(
-                "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date >= %s",
-                (week_ago,),
+                "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date=%s", (today_str,)
+            )
+            dau = cur.fetchone()[0]
+
+            # WAU
+            cur.execute(
+                "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date >= %s", (week_ago,)
             )
             wau = cur.fetchone()[0]
+
+            # D1 retention: users who registered yesterday and used today
+            cur.execute(
+                """SELECT COUNT(*) FROM users u
+                   WHERE DATE(u.created_at) = %s
+                   AND EXISTS (
+                       SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
+                   )""",
+                (yesterday_str, today_str),
+            )
+            d1_num = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = %s", (yesterday_str,)
+            )
+            d1_den = cur.fetchone()[0]
+            d1_ret = round(d1_num / d1_den * 100) if d1_den else 0
+
+            # D7 retention: users who registered 7 days ago and used today
+            day7_str = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+            cur.execute(
+                """SELECT COUNT(*) FROM users u
+                   WHERE DATE(u.created_at) = %s
+                   AND EXISTS (
+                       SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
+                   )""",
+                (day7_str, today_str),
+            )
+            d7_num = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = %s", (day7_str,)
+            )
+            d7_den = cur.fetchone()[0]
+            d7_ret = round(d7_num / d7_den * 100) if d7_den else 0
+
+            # Avg streak among active users
+            cur.execute(
+                "SELECT COALESCE(AVG(streak_days),0) FROM users WHERE status IN ('beta','paid')"
+            )
+            avg_streak = round(cur.fetchone()[0], 1)
+
+            # New users today
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = %s", (today_str,)
+            )
+            new_today = cur.fetchone()[0]
+
             return {
                 "total_users": total,
                 "pending": pending,
@@ -450,7 +546,12 @@ def get_total_stats():
                 "analyses_today": today_a,
                 "analyses_total": total_a,
                 "referrals_paid": ref_paid,
+                "dau": dau,
                 "wau": wau,
+                "d1_retention": d1_ret,
+                "d7_retention": d7_ret,
+                "avg_streak": avg_streak,
+                "new_today": new_today,
             }
 
 
@@ -461,7 +562,8 @@ def register_referral(referrer_id, referee_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO referrals (referrer_id, referred_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                "INSERT INTO referrals (referrer_id, referred_id)"
+                " VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (referrer_id, referee_id),
             )
         conn.commit()
