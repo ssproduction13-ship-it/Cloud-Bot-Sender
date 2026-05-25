@@ -512,6 +512,7 @@ async def main():
             except ValueError:
                 pass
 
+        is_new_user = get_user(uid) is None
         upsert_user(uid, un, name, referred_by=referrer_id)
         if referrer_id:
             register_referral(referrer_id, uid)
@@ -548,27 +549,31 @@ async def main():
             await message.answer("⛔ Доступ заблокирован.")
             return
 
-        if status == "pending":
-            ref_info = f"\n🔗 Пригласил: id{referrer_id}" if referrer_id else ""
-            await message.answer(
-                f"👋 Привет, {name}!\n\n"
-                "Я считаю калории по фото еды 📸\n\n"
-                "⏳ Заявка отправлена — жди одобрения."
-            )
+        # ── Notify admin on every brand-new registration ──────────────────
+        if is_new_user and uid != ADMIN_ID:
+            safe_name = (name or "").replace("_", "\\_").replace("*", "\\*")
+            safe_un   = (un   or "").replace("_", "\\_")
+            un_str    = f"@{safe_un}" if safe_un else f"id{uid}"
+            ref_info  = f"\n🔗 Реферал от: `{referrer_id}`" if referrer_id else ""
             try:
-                safe_name = (name or "").replace("_", "\\_")
-                safe_un = (un or "").replace("_", "\\_")
-                un_str = f"@{safe_un}" if safe_un else f"id{uid}"
                 await bot.send_message(
                     ADMIN_ID,
-                    f"🆕 Новый пользователь:\n"
+                    f"🆕 *Новый пользователь*\n\n"
                     f"👤 {safe_name} ({un_str})\n"
                     f"🆔 `{uid}`{ref_info}",
                     parse_mode="Markdown",
                     reply_markup=new_user_keyboard(uid),
                 )
+                log.info(f"Admin notified: new user {uid}")
             except Exception as e:
-                log.warning(f"notify_admin new user: {e}")
+                log.error(f"notify_admin new user FAILED: {e}")
+
+        if status == "pending":
+            await message.answer(
+                f"👋 Привет, {name}!\n\n"
+                "Я считаю калории по фото еды 📸\n\n"
+                "⏳ Заявка отправлена — жди одобрения администратора."
+            )
             return
 
         used = get_daily_usage(uid)
@@ -1297,17 +1302,314 @@ async def main():
             parse_mode="Markdown",
         )
 
-    # ── Admin команды ────────────────────────────────────────────────────────
-    def is_admin(m: Message) -> bool:
+    # ══════════════════════════════════════════════════════════════════════════
+    # ADMIN / OWNER PANEL  (только для ADMIN_ID)
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def only_admin(m: Message) -> bool:
         return m.from_user.id == ADMIN_ID
 
-    @dp.message(Command("approve"))
-    async def cmd_approve(message: Message):
-        if not is_admin(message):
+    def admin_panel_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Статистика",    callback_data="adm_stats"),
+                InlineKeyboardButton(text="👥 Пользователи",  callback_data="adm_users"),
+            ],
+            [
+                InlineKeyboardButton(text="⏳ Ожидают",       callback_data="adm_pending"),
+                InlineKeyboardButton(text="💎 Платные",       callback_data="adm_paid"),
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Обновить",      callback_data="adm_refresh"),
+            ],
+        ])
+
+    def user_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить",      callback_data=f"approve_{target_id}"),
+                InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{target_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="💎 +7 дней",       callback_data=f"give7_{target_id}"),
+                InlineKeyboardButton(text="💎 +30 дней",      callback_data=f"give30_{target_id}"),
+            ],
+            [
+                InlineKeyboardButton(text="⚡ Активировать",  callback_data=f"activate_{target_id}"),
+            ],
+        ])
+
+    def _fmt_user_card(u: dict) -> str:
+        """Detailed user info card (Markdown)."""
+        icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
+        safe_name = (u.get("first_name") or "").replace("_", "\\_").replace("*", "\\*")
+        un = (u.get("username") or "").replace("_", "\\_")
+        un_str = f"@{un}" if un else f"id{u['telegram_id']}"
+        status_icon = icons.get(u.get("status", ""), "❓")
+
+        lines = [
+            f"{status_icon} *{safe_name}* ({un_str})",
+            f"🆔 `{u['telegram_id']}`",
+            f"📌 Статус: *{u.get('status', '—')}*",
+        ]
+
+        if u.get("trial_expires_at"):
+            try:
+                dt = datetime.fromisoformat(u["trial_expires_at"])
+                days_left = max((dt - datetime.utcnow()).days, 0)
+                lines.append(f"🎁 Триал: {dt.strftime('%d.%m.%Y')} ({days_left} дн.)")
+            except Exception:
+                pass
+
+        if u.get("expires_at"):
+            try:
+                dt = datetime.fromisoformat(u["expires_at"])
+                days_left = max((dt - datetime.utcnow()).days, 0)
+                lines.append(f"💎 Подписка: {dt.strftime('%d.%m.%Y')} ({days_left} дн.)")
+            except Exception:
+                pass
+
+        if u.get("daily_goal"):
+            lines.append(f"🎯 Норма: {u['daily_goal']} ккал")
+
+        streak = u.get("streak_days", 0)
+        best   = u.get("best_streak", 0)
+        if streak or best:
+            lines.append(f"🔥 Серия: {streak} дн.  |  Рекорд: {best} дн.")
+
+        if u.get("created_at"):
+            lines.append(f"📅 Зарег.: {u['created_at'][:10]}")
+
+        ref = u.get("referred_by")
+        if ref:
+            lines.append(f"🔗 Реферал от: `{ref}`")
+
+        ref_s = get_referral_stats(u["telegram_id"])
+        if ref_s["total"] > 0:
+            lines.append(f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})")
+
+        return "\n".join(lines)
+
+    # ── /admin — главная панель ───────────────────────────────────────────────
+    @dp.message(Command("admin"))
+    async def cmd_admin(message: Message):
+        if not only_admin(message):
+            return
+        s = get_total_stats()
+        await message.answer(
+            f"🛡 *Admin Panel*\n\n"
+            f"👥 Всего: {s['total_users']}  "
+            f"(⏳{s['pending']} ✅{s['beta']} 💎{s['paid']} 🚫{s['blocked']})\n"
+            f"📸 Анализов сегодня: {s['analyses_today']}  |  всего: {s['analyses_total']}\n"
+            f"📅 Активных за 7 дней: {s['wau']}\n"
+            f"🔗 Реф. оплат: {s['referrals_paid']}\n\n"
+            f"*Команды:*\n"
+            f"`/user ID` — подробности пользователя\n"
+            f"`/approve ID` — выдать триал (3 дня)\n"
+            f"`/activate ID` — активировать подписку (30 дней)\n"
+            f"`/give ID [дней]` — начислить N дней\n"
+            f"`/block ID` — заблокировать\n"
+            f"`/users [pending|beta|paid|blocked]` — список\n"
+            f"`/stats` — статистика\n"
+            f"`/broadcast ТЕКСТ` — рассылка активным",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_keyboard(),
+        )
+
+    # ── Inline callbacks панели ───────────────────────────────────────────────
+    @dp.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_pending", "adm_paid", "adm_refresh"}))
+    async def cb_admin_panel(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        await callback.answer()
+        data = callback.data
+
+        if data in ("adm_stats", "adm_refresh"):
+            s = get_total_stats()
+            await callback.message.edit_text(
+                f"🛡 *Admin Panel*\n\n"
+                f"👥 Всего: {s['total_users']}  "
+                f"(⏳{s['pending']} ✅{s['beta']} 💎{s['paid']} 🚫{s['blocked']})\n"
+                f"📸 Анализов сегодня: {s['analyses_today']}  |  всего: {s['analyses_total']}\n"
+                f"📅 Активных за 7 дней: {s['wau']}\n"
+                f"🔗 Реф. оплат: {s['referrals_paid']}\n\n"
+                f"*Команды:*\n"
+                f"`/user ID` — подробности пользователя\n"
+                f"`/approve ID` — выдать триал (3 дня)\n"
+                f"`/activate ID` — активировать подписку (30 дней)\n"
+                f"`/give ID [дней]` — начислить N дней\n"
+                f"`/block ID` — заблокировать\n"
+                f"`/users [pending|beta|paid|blocked]` — список\n"
+                f"`/stats` — статистика\n"
+                f"`/broadcast ТЕКСТ` — рассылка активным",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_keyboard(),
+            )
+            return
+
+        status_filter = "pending" if data == "adm_pending" else "paid"
+        users = get_all_users(status_filter)
+        icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
+        if not users:
+            await callback.message.answer(f"Нет пользователей со статусом {status_filter}.")
+            return
+        lines = [f"*{icons.get(status_filter, '')} {status_filter.upper()} ({len(users)}):*\n"]
+        for u in users[:25]:
+            safe_name = (u["first_name"] or "").replace("_", " ")
+            un = u["username"] or ""
+            label = f"{safe_name} (@{un})" if un else f"{safe_name} (id{u['telegram_id']})"
+            lines.append(f"• {label} — `{u['telegram_id']}`")
+        await callback.message.answer("\n".join(lines), parse_mode="Markdown")
+
+    @dp.callback_query(F.data.startswith("give7_"))
+    async def cb_give7(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        target_id = int(callback.data.split("_")[1])
+        user = get_user(target_id)
+        if not user:
+            await callback.answer("Пользователь не найден.", show_alert=True)
+            return
+        activate_subscription(target_id, 7)
+        updated = get_user(target_id)
+        exp = datetime.fromisoformat(updated["expires_at"]).strftime("%d.%m.%Y") if updated["expires_at"] else "?"
+        await callback.answer(f"✅ +7 дней → до {exp}")
+        await callback.message.edit_text(
+            _fmt_user_card(updated) + f"\n\n✅ *Начислено +7 дней, подписка до {exp}*",
+            parse_mode="Markdown",
+            reply_markup=user_action_keyboard(target_id),
+        )
+        try:
+            await bot.send_message(target_id, f"🎁 Тебе начислено *+7 дней* доступа — до *{exp}*! 🙌", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data.startswith("give30_"))
+    async def cb_give30(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        target_id = int(callback.data.split("_")[1])
+        user = get_user(target_id)
+        if not user:
+            await callback.answer("Пользователь не найден.", show_alert=True)
+            return
+        activate_subscription(target_id, 30)
+        updated = get_user(target_id)
+        exp = datetime.fromisoformat(updated["expires_at"]).strftime("%d.%m.%Y") if updated["expires_at"] else "?"
+        await callback.answer(f"✅ +30 дней → до {exp}")
+        await callback.message.edit_text(
+            _fmt_user_card(updated) + f"\n\n✅ *Начислено +30 дней, подписка до {exp}*",
+            parse_mode="Markdown",
+            reply_markup=user_action_keyboard(target_id),
+        )
+        try:
+            await bot.send_message(target_id, f"🎁 Тебе начислено *+30 дней* доступа — до *{exp}*! 🙌", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data.startswith("activate_"))
+    async def cb_activate(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("Нет доступа.", show_alert=True)
+            return
+        target_id = int(callback.data.split("_")[1])
+        user = get_user(target_id)
+        if not user:
+            await callback.answer("Пользователь не найден.", show_alert=True)
+            return
+        activate_subscription(target_id, SUB_DAYS)
+        updated = get_user(target_id)
+        exp = datetime.fromisoformat(updated["expires_at"]).strftime("%d.%m.%Y") if updated["expires_at"] else "?"
+        await callback.answer(f"⚡ Активировано до {exp}")
+        await callback.message.edit_text(
+            _fmt_user_card(updated) + f"\n\n⚡ *Подписка активирована до {exp}*",
+            parse_mode="Markdown",
+            reply_markup=user_action_keyboard(target_id),
+        )
+        try:
+            await bot.send_message(
+                target_id,
+                f"⚡ Твоя подписка активирована до *{exp}*!\n\nПользуйся без ограничений 📸",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(target_id == ADMIN_ID),
+            )
+        except Exception:
+            pass
+
+    # ── /user ID — подробная карточка ─────────────────────────────────────────
+    @dp.message(Command("user"))
+    async def cmd_user(message: Message):
+        if not only_admin(message):
             return
         parts = (message.text or "").split()
         if len(parts) < 2:
-            await message.answer("Использование: /approve USER_ID")
+            await message.answer("Использование: `/user USER_ID`", parse_mode="Markdown")
+            return
+        try:
+            target_id = int(parts[1])
+        except ValueError:
+            await message.answer("Неверный ID.")
+            return
+        u = get_user(target_id)
+        if not u:
+            await message.answer(f"Пользователь `{target_id}` не найден.", parse_mode="Markdown")
+            return
+        await message.answer(
+            _fmt_user_card(u),
+            parse_mode="Markdown",
+            reply_markup=user_action_keyboard(target_id),
+        )
+
+    # ── /activate ID — force-активировать подписку ────────────────────────────
+    @dp.message(Command("activate"))
+    async def cmd_activate(message: Message):
+        if not only_admin(message):
+            return
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            await message.answer("Использование: `/activate USER_ID [дней]`", parse_mode="Markdown")
+            return
+        try:
+            target_id = int(parts[1])
+            days = int(parts[2]) if len(parts) > 2 else SUB_DAYS
+        except ValueError:
+            await message.answer("Неверные параметры.")
+            return
+        u = get_user(target_id)
+        if not u:
+            await message.answer(f"Пользователь `{target_id}` не найден.", parse_mode="Markdown")
+            return
+        activate_subscription(target_id, days)
+        updated = get_user(target_id)
+        exp = datetime.fromisoformat(updated["expires_at"]).strftime("%d.%m.%Y") if updated["expires_at"] else "?"
+        await message.answer(
+            f"⚡ Подписка активирована\n\n"
+            f"{_fmt_user_card(updated)}\n\n"
+            f"✅ Активна до *{exp}* (+{days} дн.)",
+            parse_mode="Markdown",
+            reply_markup=user_action_keyboard(target_id),
+        )
+        try:
+            await bot.send_message(
+                target_id,
+                f"⚡ Твоя подписка активирована до *{exp}*!\n\nМожно отправлять фото без ограничений 📸",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard(target_id == ADMIN_ID),
+            )
+        except Exception:
+            pass
+
+    # ── /approve ID ───────────────────────────────────────────────────────────
+    @dp.message(Command("approve"))
+    async def cmd_approve(message: Message):
+        if not only_admin(message):
+            return
+        parts = (message.text or "").split()
+        if len(parts) < 2:
+            await message.answer("Использование: `/approve USER_ID`", parse_mode="Markdown")
             return
         try:
             target_id = int(parts[1])
@@ -1341,13 +1643,14 @@ async def main():
         except Exception:
             pass
 
+    # ── /block ID ─────────────────────────────────────────────────────────────
     @dp.message(Command("block"))
     async def cmd_block(message: Message):
-        if not is_admin(message):
+        if not only_admin(message):
             return
         parts = (message.text or "").split()
         if len(parts) < 2:
-            await message.answer("Использование: /block USER_ID")
+            await message.answer("Использование: `/block USER_ID`", parse_mode="Markdown")
             return
         try:
             target_id = int(parts[1])
@@ -1358,16 +1661,20 @@ async def main():
         if not user:
             await message.answer("Пользователь не найден.")
             return
+        if target_id == ADMIN_ID:
+            await message.answer("⛔ Нельзя заблокировать владельца.")
+            return
         set_status(target_id, "blocked")
         await message.answer(f"🚫 {user_label(user)} заблокирован.")
 
+    # ── /give ID [дней] ───────────────────────────────────────────────────────
     @dp.message(Command("give"))
     async def cmd_give(message: Message):
-        if not is_admin(message):
+        if not only_admin(message):
             return
         parts = (message.text or "").split()
         if len(parts) < 2:
-            await message.answer("Использование: /give USER_ID [дней]")
+            await message.answer("Использование: `/give USER_ID [дней]`", parse_mode="Markdown")
             return
         try:
             target_id = int(parts[1])
@@ -1380,27 +1687,61 @@ async def main():
             await message.answer("Пользователь не найден.")
             return
         activate_subscription(target_id, days)
-        exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
-        await message.answer(f"💎 {user_label(user)} — подписка до {exp}.")
+        updated = get_user(target_id)
+        exp = datetime.fromisoformat(updated["expires_at"]).strftime("%d.%m.%Y") if updated["expires_at"] else "?"
+        await message.answer(f"💎 {user_label(user)} — начислено +{days} дн., до {exp}.")
         try:
             await bot.send_message(
                 target_id,
-                f"🎁 Тебе выдан доступ до *{exp}*! 📸",
+                f"🎁 Тебе начислено *+{days} дней* доступа — до *{exp}*! 📸",
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(target_id == ADMIN_ID),
             )
         except Exception:
             pass
 
+    # ── /broadcast ТЕКСТ ──────────────────────────────────────────────────────
+    @dp.message(Command("broadcast"))
+    async def cmd_broadcast(message: Message):
+        if not only_admin(message):
+            return
+        text_part = (message.text or "").split(maxsplit=1)
+        if len(text_part) < 2 or not text_part[1].strip():
+            await message.answer("Использование: `/broadcast Ваше сообщение`", parse_mode="Markdown")
+            return
+        broadcast_text = text_part[1].strip()
+        users = get_active_users()
+        sent = failed = 0
+        status_msg = await message.answer(f"📤 Рассылка {len(users)} пользователям...")
+        for u in users:
+            if u["telegram_id"] == ADMIN_ID:
+                continue
+            try:
+                await bot.send_message(u["telegram_id"], broadcast_text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        try:
+            await status_msg.edit_text(
+                f"✅ Рассылка завершена\n\n"
+                f"📨 Отправлено: {sent}\n"
+                f"❌ Не доставлено: {failed}"
+            )
+        except Exception:
+            pass
+
+    # ── /stats ────────────────────────────────────────────────────────────────
     @dp.message(Command("stats"))
     async def cmd_stats(message: Message):
-        if not is_admin(message):
+        if not only_admin(message):
             return
         await show_stats(message)
 
+    # ── /users [filter] ───────────────────────────────────────────────────────
     @dp.message(Command("users"))
     async def cmd_users(message: Message):
-        if not is_admin(message):
+        if not only_admin(message):
             return
         parts = (message.text or "").split()
         status_filter = parts[1] if len(parts) > 1 else None
@@ -1409,31 +1750,33 @@ async def main():
             await message.answer("Нет пользователей.")
             return
         icons = {"pending": "⏳", "beta": "✅", "paid": "💎", "blocked": "🚫"}
-        lines = [f"👥 Пользователи{' (' + status_filter + ')' if status_filter else ''}:\n"]
+        label = f" ({status_filter})" if status_filter else ""
+        lines = [f"*👥 Пользователи{label} — {len(users)} чел.:*\n"]
         for u in users[:30]:
-            lines.append(f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`")
+            streak = u.get("streak_days", 0)
+            streak_icon = f" 🔥{streak}" if streak > 1 else ""
+            lines.append(f"{icons.get(u['status'], '❓')} {user_label(u)} — `{u['telegram_id']}`{streak_icon}")
         await message.answer("\n".join(lines), parse_mode="Markdown")
 
+    # ── /myid ─────────────────────────────────────────────────────────────────
     @dp.message(Command("myid"))
     async def cmd_myid(message: Message):
         uid = message.from_user.id
         is_adm = uid == ADMIN_ID
         await message.answer(
             f"🆔 Твой Telegram ID: `{uid}`\n"
-            f"👑 Статус админа: {'✅ Да' if is_adm else '❌ Нет'}\n\n"
-            f"{'Всё верно — ты администратор.' if is_adm else f'Если ты администратор, установи TELEGRAM_CHAT_ID={uid} в переменных Railway.'}",
+            f"👑 Админ: {'✅ Да' if is_adm else '❌ Нет'}\n\n"
+            f"{'Всё верно — ты владелец бота.' if is_adm else f'Чтобы стать админом: установи TELEGRAM_CHAT_ID={uid} в Railway.'}",
             parse_mode="Markdown",
         )
 
+    # ── /cancel ───────────────────────────────────────────────────────────────
     @dp.message(Command("cancel"))
     async def cmd_cancel(message: Message):
         uid = message.from_user.id
         if uid in user_states:
             user_states.pop(uid)
-            await message.answer(
-                "❌ Отменено.",
-                reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
+            await message.answer("❌ Отменено.", reply_markup=main_keyboard(uid == ADMIN_ID))
         else:
             await message.answer("Нечего отменять.", reply_markup=main_keyboard(uid == ADMIN_ID))
 
