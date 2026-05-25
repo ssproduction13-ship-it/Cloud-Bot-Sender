@@ -900,94 +900,81 @@ async def send_weekly_reports(bot: Bot):
 
 # ── Subscription expiry reminders ────────────────────────────────────────────
 
-  async def send_expiry_reminders(bot: Bot):
-      """Notify users 3 days and 1 day before subscription expires."""
-      for days_left in (3, 1):
-          for user in get_expiring_users(days_left):
-              uid = user["telegram_id"]
-              name = (user.get("first_name") or "").split()[0] or "Привет"
-              exp = user["expires_at"][:10]
-              try:
-                  exp_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d.%m.%Y")
-              except Exception:
-                  exp_fmt = exp
-              msg = (
-                  f"⏰ *{name}, подписка истекает {'завтра' if days_left == 1 else 'через 3 дня'}!*
-
-"
-                  f"📅 Дата окончания: *{exp_fmt}*
-
-"
-                  f"Продли сейчас — не потеряй стрик и историю питания 🔥"
-              )
-              try:
-                  await bot.send_message(
-                      uid, msg, parse_mode="Markdown",
-                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                          [InlineKeyboardButton(text="⭐ Продлить подписку", callback_data="show_premium")],
-                      ]),
-                  )
-              except Exception as e:
-                  log.debug(f"expiry reminder {uid}: {e}")
-              await asyncio.sleep(0.05)
+async def send_expiry_reminders(bot: Bot):
+    """Notify users 3 days and 1 day before subscription expires."""
+    for days_left in (3, 1):
+        for user in get_expiring_users(days_left):
+            uid = user["telegram_id"]
+            name = (user.get("first_name") or "").split()[0] or "Привет"
+            exp = user["expires_at"][:10]
+            try:
+                exp_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d.%m.%Y")
+            except Exception:
+                exp_fmt = exp
+            msg = (
+                f"⏰ *{name}, подписка истекает {'завтра' if days_left == 1 else 'через 3 дня'}!*\n\n"
+                f"📅 Дата окончания: *{exp_fmt}*\n\n"
+                f"Продли сейчас — не потеряй стрик и историю питания 🔥"
+            )
+            try:
+                await bot.send_message(
+                    uid, msg, parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="⭐ Продлить подписку", callback_data="show_premium")],
+                    ]),
+                )
+            except Exception as e:
+                log.debug(f"expiry reminder {uid}: {e}")
+            await asyncio.sleep(0.05)
 
 
-  async def send_winback_messages(bot: Bot):
-      """3 days after expiry — send win-back message with discount offer."""
-      for user in get_winback_users():
-          uid = user["telegram_id"]
-          name = (user.get("first_name") or "").split()[0] or "Привет"
-          streak = user.get("streak_days", 0)
-          streak_line = (
-              f"
-🔥 У тебя был стрик *{streak} дней* — не дай ему пропасть!"
-              if streak > 2 else ""
-          )
-          try:
-              await bot.send_message(
-                  uid,
-                  f"👋 *{name}, скучаем по тебе!*
-
-"
-                  f"Прошло 3 дня с окончания подписки."
-                  f"{streak_line}
-
-"
-                  f"Возвращайся — продолжи следить за питанием и прогрессом! 💪",
-                  parse_mode="Markdown",
-                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                      [InlineKeyboardButton(text="⭐ Возобновить подписку", callback_data="show_premium")],
-                  ]),
-              )
-          except Exception as e:
-              log.debug(f"winback {uid}: {e}")
-          await asyncio.sleep(0.05)
+async def send_winback_messages(bot: Bot):
+    """3 days after expiry — send win-back message with discount offer."""
+    for user in get_winback_users():
+        uid = user["telegram_id"]
+        name = (user.get("first_name") or "").split()[0] or "Привет"
+        streak = user.get("streak_days", 0)
+        streak_line = (
+        streak_line = (
+            f"\n🔥 У тебя был стрик *{streak} дней* — не дай ему пропасть!"
+            if streak > 2 else ""
+        )
+        try:
+            await bot.send_message(
+                uid,
+                f"👋 *{name}, скучаем по тебе!*\n\n"
+                f"Прошло 3 дня с окончания подписки."
+                f"{streak_line}\n\n"
+                f"Возвращайся — продолжи следить за питанием и прогрессом! 💪",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⭐ Возобновить подписку", callback_data="show_premium")],
+                ]),
+            )
+        except Exception as e:
+            log.debug(f"winback {uid}: {e}")
+        await asyncio.sleep(0.05)
 
 
-  async def send_streak_reminders(bot: Bot):
-      """Evening nudge: users with active streaks who haven't logged today."""
-      for user in get_streak_users_no_log_today():
-          uid = user["telegram_id"]
-          streak = user.get("streak_days", 0)
-          name = (user.get("first_name") or "").split()[0] or "Привет"
-          try:
-              await bot.send_message(
-                  uid,
-                  f"🔥 *{name}, не прерывай серию!*
-
-"
-                  f"Ты на *{streak} {'день' if streak == 1 else 'дней'}* подряд — сегодня ещё нет записей.
-
-"
-                  f"📸 Сфотографируй ужин или введи что ел — займёт 10 секунд!",
-                  parse_mode="Markdown",
-              )
-          except Exception as e:
-              log.debug(f"streak reminder {uid}: {e}")
-          await asyncio.sleep(0.05)
+async def send_streak_reminders(bot: Bot):
+    """Evening nudge: users with active streaks who haven't logged today."""
+    for user in get_streak_users_no_log_today():
+        uid = user["telegram_id"]
+        streak = user.get("streak_days", 0)
+        name = (user.get("first_name") or "").split()[0] or "Привет"
+        try:
+            await bot.send_message(
+                uid,
+                f"🔥 *{name}, не прерывай серию!*\n\n"
+                f"Ты на *{streak} {'день' if streak == 1 else 'дней'}* подряд — сегодня ещё нет записей.\n\n"
+                f"📸 Сфотографируй ужин или введи что ел — займёт 10 секунд!",
+                parse_mode="Markdown",
+            )
+        except Exception as e:
+            log.debug(f"streak reminder {uid}: {e}")
+        await asyncio.sleep(0.05)
 
 
-  
+
 async def main():
     init_db()
     bot = Bot(token=BOT_TOKEN)
@@ -998,11 +985,11 @@ async def main():
     scheduler.add_job(send_morning_checkins, "cron", hour=3,  minute=0, args=[bot])
     scheduler.add_job(send_evening_summaries, "cron", hour=15, minute=0, args=[bot])
     scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=4, minute=0, args=[bot])
-      # UTC+5 (Tyumen): 09:00 → 04:00 UTC, 21:30 → 16:30 UTC
-      scheduler.add_job(send_expiry_reminders, "cron", hour=4,  minute=30, args=[bot])
-      scheduler.add_job(send_winback_messages, "cron", hour=4,  minute=45, args=[bot])
-      scheduler.add_job(send_streak_reminders, "cron", hour=16, minute=30, args=[bot])
-      scheduler.start()
+    # UTC+5 (Tyumen): 09:00 → 04:00 UTC, 21:30 → 16:30 UTC
+    scheduler.add_job(send_expiry_reminders, "cron", hour=4,  minute=30, args=[bot])
+    scheduler.add_job(send_winback_messages, "cron", hour=4,  minute=45, args=[bot])
+    scheduler.add_job(send_streak_reminders, "cron", hour=16, minute=30, args=[bot])
+    scheduler.start()
 
     # ── /start ────────────────────────────────────────────────────────────────
     @dp.message(Command("start"))
