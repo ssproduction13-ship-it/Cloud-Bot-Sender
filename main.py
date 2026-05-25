@@ -57,6 +57,12 @@ from db import (
     delete_entry,
     reset_today_entries,
     set_user_goals,
+      get_expiring_users,
+      get_winback_users,
+      get_streak_users_no_log_today,
+      add_water_log,
+      get_water_today,
+      get_users_by_segment,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -71,6 +77,11 @@ SUB_PRICE_STARS       = 150
 SUB_DAYS              = 30
 REFERRAL_BONUS_DAYS   = 7
 REFERRAL_JOIN_BONUS_DAYS = 3
+  SUB_PRICE_3M          = 360   # 3 months (−20%)
+  SUB_PRICE_12M         = 990   # 12 months (−45%)
+  SUB_DAYS_3M           = 90
+  SUB_DAYS_12M          = 365
+  WATER_GOAL            = 8     # glasses per day
 
 STREAK_MILESTONES = {
     3:  "🥉 3 дня подряд",
@@ -189,20 +200,24 @@ BTN_SUB      = "⭐ Premium"
 BTN_REF      = "🎁 Бонусы"
 BTN_PROFILE  = "⚙️ Профиль"
 BTN_ADMIN    = "🛠 Админка"
+  BTN_WATER    = "💧 Вода"
+  BTN_PLAN     = "🍽 План питания"
 
 MENU_BUTTONS = {
-    BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS,
-    BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
-}
+      BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS,
+      BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
+      BTN_WATER, BTN_PLAN,
+  }
 
 
 def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(text=BTN_PHOTO),   KeyboardButton(text=BTN_MANUAL)],
-        [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
-        [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
-    ]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+      rows = [
+          [KeyboardButton(text=BTN_PHOTO),   KeyboardButton(text=BTN_MANUAL)],
+          [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
+          [KeyboardButton(text=BTN_WATER),   KeyboardButton(text=BTN_PLAN)],
+          [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
+      ]
+      return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 # ─────────────────── AI анализ ───────────────────────────────────────────────
@@ -586,10 +601,21 @@ def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
 
 
 def premium_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"💳 Оплатить {SUB_PRICE_STARS} ⭐ (30 дней)", callback_data="buy_sub")],
-        [InlineKeyboardButton(text="👥 Получить бесплатно (реферал)", callback_data="ref_screen")],
-    ])
+      return InlineKeyboardMarkup(inline_keyboard=[
+          [InlineKeyboardButton(
+              text=f"💳 {SUB_PRICE_STARS} ⭐ — 1 месяц",
+              callback_data="buy_sub:30",
+          )],
+          [InlineKeyboardButton(
+              text=f"💰 {SUB_PRICE_3M} ⭐ — 3 месяца (−20%)",
+              callback_data="buy_sub:90",
+          )],
+          [InlineKeyboardButton(
+              text=f"🏆 {SUB_PRICE_12M} ⭐ — 12 месяцев (−45%)",
+              callback_data="buy_sub:365",
+          )],
+          [InlineKeyboardButton(text="👥 Получить бесплатно (реферал)", callback_data="ref_screen")],
+      ])
 
 
 
@@ -709,6 +735,36 @@ async def _deliver_analysis(
         if fun:
             await message.answer(fun)
 
+    # AI nutrition advice for premium users
+      if (not check_subscription_expired(uid)) and user.get("status") == "paid":
+          try:
+              goal = user.get("daily_goal")
+              goal_protein = user.get("protein_goal")
+              macros_now = get_daily_macros(uid)
+              advice_prompt = (
+                  f"Пользователь только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
+                  f"Дневной итог: {macros_now['kcal']} ккал"
+                  + (f" из {goal}" if goal else "")
+                  + f", белок {macros_now['protein']}г"
+                  + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
+                  "Дай ОДИН конкретный совет (1-2 предложения) что съесть следующим приёмом пищи "
+                  "для баланса КБЖУ. Без воды, только практика. Один эмодзи."
+              )
+              advice_resp = await openai_client.chat.completions.create(
+                  model="meta-llama/llama-4-scout-17b-16e-instruct",
+                  messages=[
+                      {"role": "system", "content": "Краткий нутрициолог. Только конкретные советы."},
+                      {"role": "user", "content": advice_prompt},
+                  ],
+                  max_tokens=120,
+              )
+              advice_text = advice_resp.choices[0].message.content or ""
+              if advice_text.strip():
+                  await message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
+          except Exception as adv_e:
+              log.debug(f"ai advice error: {adv_e}")
+
+  
     if milestone and streak in STREAK_MILESTONES:
         await message.answer(
             f"🎉 *Ачивка разблокирована!*\n"
@@ -842,6 +898,96 @@ async def send_weekly_reports(bot: Bot):
 # ─────────────────── Бот ─────────────────────────────────────────────────────
 
 
+# ── Subscription expiry reminders ────────────────────────────────────────────
+
+  async def send_expiry_reminders(bot: Bot):
+      """Notify users 3 days and 1 day before subscription expires."""
+      for days_left in (3, 1):
+          for user in get_expiring_users(days_left):
+              uid = user["telegram_id"]
+              name = (user.get("first_name") or "").split()[0] or "Привет"
+              exp = user["expires_at"][:10]
+              try:
+                  exp_fmt = datetime.strptime(exp, "%Y-%m-%d").strftime("%d.%m.%Y")
+              except Exception:
+                  exp_fmt = exp
+              msg = (
+                  f"⏰ *{name}, подписка истекает {'завтра' if days_left == 1 else 'через 3 дня'}!*
+
+"
+                  f"📅 Дата окончания: *{exp_fmt}*
+
+"
+                  f"Продли сейчас — не потеряй стрик и историю питания 🔥"
+              )
+              try:
+                  await bot.send_message(
+                      uid, msg, parse_mode="Markdown",
+                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="⭐ Продлить подписку", callback_data="show_premium")],
+                      ]),
+                  )
+              except Exception as e:
+                  log.debug(f"expiry reminder {uid}: {e}")
+              await asyncio.sleep(0.05)
+
+
+  async def send_winback_messages(bot: Bot):
+      """3 days after expiry — send win-back message with discount offer."""
+      for user in get_winback_users():
+          uid = user["telegram_id"]
+          name = (user.get("first_name") or "").split()[0] or "Привет"
+          streak = user.get("streak_days", 0)
+          streak_line = (
+              f"
+🔥 У тебя был стрик *{streak} дней* — не дай ему пропасть!"
+              if streak > 2 else ""
+          )
+          try:
+              await bot.send_message(
+                  uid,
+                  f"👋 *{name}, скучаем по тебе!*
+
+"
+                  f"Прошло 3 дня с окончания подписки."
+                  f"{streak_line}
+
+"
+                  f"Возвращайся — продолжи следить за питанием и прогрессом! 💪",
+                  parse_mode="Markdown",
+                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                      [InlineKeyboardButton(text="⭐ Возобновить подписку", callback_data="show_premium")],
+                  ]),
+              )
+          except Exception as e:
+              log.debug(f"winback {uid}: {e}")
+          await asyncio.sleep(0.05)
+
+
+  async def send_streak_reminders(bot: Bot):
+      """Evening nudge: users with active streaks who haven't logged today."""
+      for user in get_streak_users_no_log_today():
+          uid = user["telegram_id"]
+          streak = user.get("streak_days", 0)
+          name = (user.get("first_name") or "").split()[0] or "Привет"
+          try:
+              await bot.send_message(
+                  uid,
+                  f"🔥 *{name}, не прерывай серию!*
+
+"
+                  f"Ты на *{streak} {'день' if streak == 1 else 'дней'}* подряд — сегодня ещё нет записей.
+
+"
+                  f"📸 Сфотографируй ужин или введи что ел — займёт 10 секунд!",
+                  parse_mode="Markdown",
+              )
+          except Exception as e:
+              log.debug(f"streak reminder {uid}: {e}")
+          await asyncio.sleep(0.05)
+
+
+  
 async def main():
     init_db()
     bot = Bot(token=BOT_TOKEN)
@@ -852,7 +998,11 @@ async def main():
     scheduler.add_job(send_morning_checkins, "cron", hour=3,  minute=0, args=[bot])
     scheduler.add_job(send_evening_summaries, "cron", hour=15, minute=0, args=[bot])
     scheduler.add_job(send_weekly_reports, "cron", day_of_week="mon", hour=4, minute=0, args=[bot])
-    scheduler.start()
+      # UTC+5 (Tyumen): 09:00 → 04:00 UTC, 21:30 → 16:30 UTC
+      scheduler.add_job(send_expiry_reminders, "cron", hour=4,  minute=30, args=[bot])
+      scheduler.add_job(send_winback_messages, "cron", hour=4,  minute=45, args=[bot])
+      scheduler.add_job(send_streak_reminders, "cron", hour=16, minute=30, args=[bot])
+      scheduler.start()
 
     # ── /start ────────────────────────────────────────────────────────────────
     @dp.message(Command("start"))
@@ -1233,6 +1383,39 @@ async def main():
         return "\n".join(lines)
 
     # ── Admin inline callbacks ─────────────────────────────────────────────────
+    # ── Segmented broadcast ─────────────────────────────────────────────────────
+      @dp.callback_query(F.data.startswith("bcast:"))
+      async def cb_bcast_segment(callback: CallbackQuery):
+          if callback.from_user.id != ADMIN_ID:
+              await callback.answer("Нет доступа.", show_alert=True)
+              return
+          await callback.answer()
+          segment = callback.data.split(":")[1]
+          segment_labels = {
+              "all_active":   "Все активные",
+              "trial_active": "Триал-пользователи",
+              "paid_active":  "Платные подписки",
+              "sub_expired":  "Подписка истекла",
+              "no_log_week":  "Не логируют 7+ дней",
+          }
+          label = segment_labels.get(segment, segment)
+          users = get_users_by_segment(segment)
+          user_states[callback.from_user.id] = {
+              "state": STATES["ADMIN_BROADCAST"],
+              "data": {"segment": segment, "segment_label": label, "segment_count": len(users)},
+              "_ts": datetime.utcnow(),
+          }
+          await callback.message.answer(
+              f"📡 *Рассылка → {label}*
+"
+              f"👥 Получателей: *{len(users)}*
+
+"
+              f"Введи текст сообщения для рассылки:",
+              parse_mode="Markdown",
+          )
+
+  
     @dp.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_pending",
                                     "adm_paid", "adm_refresh", "adm_broadcast"}))
     async def cb_admin_panel(callback: CallbackQuery):
@@ -1260,10 +1443,22 @@ async def main():
             return
 
         if data == "adm_broadcast":
-            user_states[callback.from_user.id] = {"state": STATES["ADMIN_BROADCAST"], "data": {}}
-            await callback.message.answer("📡 Введи текст рассылки:")
-            return
+              await callback.message.answer(
+                  "📡 *Сегментированная рассылка*
 
+Выбери аудиторию:",
+                  parse_mode="Markdown",
+                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                      [InlineKeyboardButton(text="👥 Все активные", callback_data="bcast:all_active")],
+                      [InlineKeyboardButton(text="🎁 Триал-пользователи", callback_data="bcast:trial_active")],
+                      [InlineKeyboardButton(text="💎 Платные подписки", callback_data="bcast:paid_active")],
+                      [InlineKeyboardButton(text="⏰ Подписка истекла", callback_data="bcast:sub_expired")],
+                      [InlineKeyboardButton(text="😴 Не логируют 7+ дней", callback_data="bcast:no_log_week")],
+                  ]),
+              )
+              return
+
+  
         status_filter = "pending" if data == "adm_pending" else "paid"
         if data == "adm_users":
             status_filter = None
@@ -1558,20 +1753,28 @@ async def main():
         _set_onboard_state(uid, "ob_goal", {})
 
     # ── buy_sub callback ───────────────────────────────────────────────────────
-    @dp.callback_query(F.data == "buy_sub")
-    async def cb_buy_sub(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-        await bot.send_invoice(
-            chat_id=uid,
-            title="CalorieBot Premium — 30 дней",
-            description="Безлимит · Трекер калорий · КБЖУ · Стрики · Недельные отчёты",
-            payload=f"sub_30d_{uid}",
-            currency="XTR",
-            prices=[LabeledPrice(label="Premium 30 дней", amount=SUB_PRICE_STARS)],
-        )
+      @dp.callback_query(F.data.startswith("buy_sub"))
+      async def cb_buy_sub(callback: CallbackQuery):
+          uid = callback.from_user.id
+          await callback.answer()
+          parts = callback.data.split(":")
+          plan = parts[1] if len(parts) > 1 else "30"
+          plans = {
+              "30":  (SUB_PRICE_STARS, SUB_DAYS,    "1 месяц",    "Premium 30 дней"),
+              "90":  (SUB_PRICE_3M,   SUB_DAYS_3M,  "3 месяца",   "Premium 90 дней"),
+              "365": (SUB_PRICE_12M,  SUB_DAYS_12M, "12 месяцев", "Premium 365 дней"),
+          }
+          price, days, label, pay_label = plans.get(plan, plans["30"])
+          await bot.send_invoice(
+              chat_id=uid,
+              title=f"CalorieBot Premium — {label}",
+              description="Безлимит · Трекер калорий · КБЖУ · Стрики · Недельные отчёты · AI-план питания",
+              payload=f"sub_{days}d_{uid}",
+              currency="XTR",
+              prices=[LabeledPrice(label=pay_label, amount=price)],
+          )
 
-    @dp.callback_query(F.data == "ref_screen")
+      @dp.callback_query(F.data == "ref_screen")
     async def cb_ref_screen(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
@@ -1845,16 +2048,29 @@ async def main():
             "gain":     "набор массы",
         }
         goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
-        await callback.message.answer(
-            f"🎉 *Профиль настроен!*\n\n"
-            f"🎯 Цель: *{goal_label}*\n"
-            f"⚡️ Активность: *{act_label}*\n"
-            f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
-            f"🥩 Норма белка: *{protein_goal} г/день*\n\n"
-            "Отправляй фото еды или описывай что съел — буду следить за прогрессом! 📸",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(uid == ADMIN_ID),
-        )
+        # Calculate weight forecast for onboarding completion message
+          goal_type_local = ob_data.get("goal_type", "maintain")
+          forecast_line = ""
+          if goal_type_local == "lose":
+              kg_month = round((goal_kcal * 30 - (goal_kcal + 400) * 30) / 7700 * (-1), 1)
+              kg_month = round(400 * 30 / 7700, 1)
+              forecast_line = f"\n\n📉 *Прогноз:* при соблюдении нормы — минус ~*{kg_month} кг/мес*"
+          elif goal_type_local == "gain":
+              kg_month = round(300 * 30 / 7700, 1)
+              forecast_line = f"\n\n📈 *Прогноз:* при профиците — плюс ~*{kg_month} кг/мес*"
+          else:
+              forecast_line = "\n\n⚖️ *Цель — поддержание веса.* Отслеживай КБЖУ каждый день!"
+          await callback.message.answer(
+              f"🎉 *Профиль настроен!*\n\n"
+              f"🎯 Цель: *{goal_label}*\n"
+              f"⚡️ Активность: *{act_label}*\n"
+              f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
+              f"🥩 Норма белка: *{protein_goal} г/день*"
+              f"{forecast_line}\n\n"
+              "Отправляй фото еды или описывай что съел — буду следить за прогрессом! 📸",
+              parse_mode="Markdown",
+              reply_markup=main_keyboard(uid == ADMIN_ID),
+          )
 
     @dp.message(F.photo)
     async def handle_photo(message: Message):
@@ -1902,41 +2118,112 @@ async def main():
             await message.answer("⚠️ Не удалось проанализировать. Попробуй ещё раз.")
 
     # ── Payment ────────────────────────────────────────────────────────────────
+    # ── show_premium callback ───────────────────────────────────────────────────
+      @dp.callback_query(F.data == "show_premium")
+      async def cb_show_premium(callback: CallbackQuery):
+          uid = callback.from_user.id
+          await callback.answer()
+          user = get_user(uid)
+          await _show_premium_screen(callback.message.answer, uid, user)
+
+      # ── water tracker callbacks ─────────────────────────────────────────────────
+      @dp.callback_query(F.data == "water_add")
+      async def cb_water_add(callback: CallbackQuery):
+          uid = callback.from_user.id
+          await callback.answer()
+          glasses = add_water_log(uid)
+          filled = min(glasses, WATER_GOAL)
+          bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
+          pct = round(glasses / WATER_GOAL * 100)
+          status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
+          try:
+              await callback.message.edit_text(
+                  f"💧 *Вода сегодня*
+
+"
+                  f"{bar}
+"
+                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%
+"
+                  f"{status}",
+                  parse_mode="Markdown",
+                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                      [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
+                  ]),
+              )
+          except Exception:
+              pass
+
+      @dp.callback_query(F.data == "water_reset")
+      async def cb_water_reset(callback: CallbackQuery):
+          uid = callback.from_user.id
+          await callback.answer("Сброшено")
+          reset_water_today(uid)
+          try:
+              await callback.message.edit_text(
+                  f"💧 *Вода сегодня*
+
+{'⬜' * WATER_GOAL}
+*0 / {WATER_GOAL} стаканов*",
+                  parse_mode="Markdown",
+                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                  ]),
+              )
+          except Exception:
+              pass
+
+  
     @dp.pre_checkout_query()
     async def pre_checkout(query: PreCheckoutQuery):
         await query.answer(ok=True)
 
     @dp.message(F.successful_payment)
-    async def payment_done(message: Message):
-        uid = message.from_user.id
-        activate_subscription(uid, SUB_DAYS)
-        exp = (datetime.utcnow() + timedelta(days=SUB_DAYS)).strftime("%d.%m.%Y")
-        await message.answer(
-            f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
-            f"📅 Подписка до *{exp}*\n"
-            f"📸 Безлимитные анализы разблокированы\n\n"
-            f"Отправляй фото еды — я всегда рядом 🚀",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(uid == ADMIN_ID),
-        )
-        referrer_id = mark_referral_paid(uid)
-        if referrer_id:
-            activate_subscription(referrer_id, REFERRAL_BONUS_DAYS)
-            try:
-                ref_user = get_user(referrer_id)
-                new_exp = (
-                    datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
-                    if ref_user and ref_user.get("expires_at") else "—"
-                )
-                await bot.send_message(
-                    referrer_id,
-                    f"🎁 Твой реферал оплатил! *+{REFERRAL_BONUS_DAYS} дней* → до *{new_exp}*",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                log.warning(f"referral notify: {e}")
-        user = get_user(uid)
-        await notify_admin(bot, f"💰 Оплата: {user_label(user)} → до {exp}")
+      async def payment_done(message: Message):
+          uid = message.from_user.id
+          payload = message.successful_payment.invoice_payload
+          # payload format: sub_Xd_UID
+          try:
+              days = int(payload.split("_")[1].rstrip("d"))
+          except Exception:
+              days = SUB_DAYS
+          activate_subscription(uid, days)
+          exp = (datetime.utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
+          plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
+          await message.answer(
+              f"🎉 *Оплата прошла! Добро пожаловать в Premium!*
+
+"
+              f"📅 Подписка *{plan_label}* — до *{exp}*
+"
+              f"📸 Безлимитные анализы разблокированы
+"
+              f"🍽 AI-план питания доступен
+
+"
+              f"Отправляй фото еды — я всегда рядом 🚀",
+              parse_mode="Markdown",
+              reply_markup=main_keyboard(uid == ADMIN_ID),
+          )
+          referrer_id = mark_referral_paid(uid)
+          if referrer_id:
+              activate_subscription(referrer_id, REFERRAL_BONUS_DAYS)
+              try:
+                  ref_user = get_user(referrer_id)
+                  new_exp = (
+                      datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
+                      if ref_user and ref_user.get("expires_at") else "—"
+                  )
+                  await bot.send_message(
+                      referrer_id,
+                      f"🎁 Твой реферал оплатил! *+{REFERRAL_BONUS_DAYS} дней* → до *{new_exp}*",
+                      parse_mode="Markdown",
+                  )
+              except Exception as e:
+                  log.warning(f"referral notify: {e}")
+          user = get_user(uid)
+          await notify_admin(bot, f"💰 Оплата: {user_label(user)} · {plan_label} → до {exp}")
 
     # ── Menu text handlers ─────────────────────────────────────────────────────
     @dp.message(F.text.in_(MENU_BUTTONS))
@@ -2065,6 +2352,96 @@ async def main():
                 await deny(message, reason)
             return
 
+        if text == BTN_WATER:
+              glasses = get_water_today(uid)
+              filled = min(glasses, WATER_GOAL)
+              bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
+              pct = round(glasses / WATER_GOAL * 100) if WATER_GOAL else 0
+              status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
+              await message.answer(
+                  f"💧 *Вода сегодня*
+
+"
+                  f"{bar}
+"
+                  f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%
+"
+                  f"{status}",
+                  parse_mode="Markdown",
+                  reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                      [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
+                      [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
+                  ]),
+              )
+              return
+
+          if text == BTN_PLAN:
+              ok, reason = access_check(user)
+              if not ok:
+                  await deny(message, reason)
+                  return
+              if user.get("status") != "paid" or check_subscription_expired(user):
+                  await message.answer(
+                      "🍽 *AI-план питания* — Premium функция
+
+"
+                      "Получи персональный план питания на день на основе твоих целей и нормы КБЖУ 🎯",
+                      parse_mode="Markdown",
+                      reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                          [InlineKeyboardButton(text="⭐ Открыть Premium", callback_data="show_premium")],
+                      ]),
+                  )
+                  return
+              if not user.get("daily_goal"):
+                  await message.answer(
+                      "⚙️ Сначала настрой профиль — нажми *Профиль* → *Пересчитать норму*.",
+                      parse_mode="Markdown",
+                  )
+                  return
+              thinking_msg = await message.answer("🤔 *Составляю план питания...*", parse_mode="Markdown")
+              try:
+                  goal_kcal = user.get("daily_goal", 2000)
+                  protein_g = user.get("protein_goal", 150)
+                  goal_type = user.get("goal_type", "maintain")
+                  gender = user.get("gender", "male")
+                  goal_labels = {"lose": "похудение", "maintain": "поддержание", "gain": "набор массы"}
+                  plan_prompt = (
+                      f"Составь персональный план питания на один день.\n"
+                      f"Параметры: цель={goal_labels.get(goal_type,'поддержание')}, "
+                      f"норма={goal_kcal} ккал, белок={protein_g}г, пол={'мужской' if gender=='male' else 'женский'}.\n"
+                      f"Формат: 4 приёма пищи (завтрак, обед, перекус, ужин).\n"
+                      f"Для каждого: название + калории + КБЖУ (Б/Ж/У в граммах). "
+                      f"В конце итого. Кратко, конкретно. Только реальные блюда, без экзотики."
+                  )
+                  resp = await openai_client.chat.completions.create(
+                      model="meta-llama/llama-4-scout-17b-16e-instruct",
+                      messages=[
+                          {"role": "system", "content": "Профессиональный нутрициолог. Составляй практичные планы питания."},
+                          {"role": "user", "content": plan_prompt},
+                      ],
+                      max_tokens=700,
+                  )
+                  plan_text = resp.choices[0].message.content or ""
+                  try:
+                      await thinking_msg.delete()
+                  except Exception:
+                      pass
+                  await message.answer(
+                      f"🍽 *Твой план питания на сегодня*
+
+{plan_text}",
+                      parse_mode="Markdown",
+                  )
+              except Exception as plan_e:
+                  log.error(f"meal plan error: {plan_e}")
+                  try:
+                      await thinking_msg.delete()
+                  except Exception:
+                      pass
+                  await message.answer("⚠️ Не удалось составить план. Попробуй чуть позже.")
+              return
+
+  
         if text == BTN_SUB:
             await _show_premium_screen(message.answer, uid, user)
             return
@@ -2275,18 +2652,28 @@ async def main():
 
           # ── Admin broadcast state ──────────────────────────────────────────────
         if state == STATES["ADMIN_BROADCAST"] and uid == ADMIN_ID:
-            users = get_active_users()
-            sent = failed = 0
-            for u in users:
-                try:
-                    await bot.send_message(u["telegram_id"], text)
-                    sent += 1
-                except Exception:
-                    failed += 1
-                await asyncio.sleep(0.05)  # Telegram rate limit
-            user_states.pop(uid, None)
-            await message.answer(f"📡 Рассылка: ✅{sent} ❌{failed}")
-            return
+              s_data = _get_state(uid).get("data", {})
+              segment = s_data.get("segment", "all_active")
+              segment_label = s_data.get("segment_label", "Все активные")
+              users = get_users_by_segment(segment)
+              sent = failed = 0
+              for u in users:
+                  try:
+                      await bot.send_message(u["telegram_id"], text)
+                      sent += 1
+                  except Exception:
+                      failed += 1
+                  await asyncio.sleep(0.05)
+              user_states.pop(uid, None)
+              await message.answer(
+                  f"📡 *Рассылка завершена*
+"
+                  f"👥 Аудитория: {segment_label}
+"
+                  f"✅ Отправлено: {sent}  ❌ Ошибок: {failed}",
+                  parse_mode="Markdown",
+              )
+              return
 
         # ── Correct entry ──────────────────────────────────────────────────────
         if state == STATES["CORRECT_ENTRY"]:
