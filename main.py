@@ -1793,7 +1793,7 @@ async def main():
         price, days, label, pay_label = plans.get(plan, plans["30"])
         await bot.send_invoice(
             chat_id=uid,
-            title=f"CalorieBot Premium — {label}",
+            title=f"NutriAI Premium — {label}",
             description="Безлимит · Трекер калорий · КБЖУ · Стрики · Недельные отчёты · AI-план питания",
             payload=f"sub_{days}d_{uid}",
             currency="XTR",
