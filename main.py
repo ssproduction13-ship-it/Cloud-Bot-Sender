@@ -50,6 +50,9 @@ from db import (
     update_streak,
     add_weight_log,
     get_weight_history,
+    get_entries_today,
+    delete_entry,
+    reset_today_entries,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -479,6 +482,30 @@ def daily_progress_text(uid: int, user: dict | None = None,
 def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✏️ Исправить калории", callback_data=f"correct:{entry_id}")
+    ]])
+
+
+def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
+    """Inline keyboard listing today's entries with edit/delete per entry."""
+    rows = []
+    for e in entries:
+        name = (e["food_name"] or "запись")[:22]
+        kcal = e["calories"] or 0
+        used_at = e.get("used_at") or ""
+        time_str = used_at[11:16] if len(used_at) > 15 else ""
+        label = f"{time_str}  {name} — {kcal} ккал" if time_str else f"{name} — {kcal} ккал"
+        rows.append([
+            InlineKeyboardButton(text=label[:40], callback_data=f"edit_e:{e['id']}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"del_e:{e['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="🗑 Сбросить весь день", callback_data="reset_day")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def progress_inline_keyboard() -> InlineKeyboardMarkup:
+    """Small inline keyboard shown below the progress message."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📋 Записи за сегодня", callback_data="diary"),
     ]])
 
 
@@ -1632,6 +1659,117 @@ async def main():
         await callback.answer()
         await _show_referral(callback.message.answer, uid)
 
+    # ── Diary: show today's entries ────────────────────────────────────────────
+    async def _show_diary(send_fn, uid: int):
+        entries = get_entries_today(uid)
+        if not entries:
+            await send_fn(
+                "📋 *Записей сегодня нет*\n\nОтправь фото или опиши блюдо — добавлю в дневник 🍽",
+                parse_mode="Markdown",
+            )
+            return
+        total = sum(e["calories"] or 0 for e in entries)
+        header = f"📋 *Дневник за сегодня* — {total} ккал\n\n"
+        header += "_Нажми запись чтобы изменить ккал, 🗑 — удалить_"
+        await send_fn(header, parse_mode="Markdown", reply_markup=diary_keyboard(entries))
+
+    @dp.callback_query(F.data == "diary")
+    async def cb_diary(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        await _show_diary(callback.message.answer, uid)
+
+    @dp.callback_query(F.data.startswith("edit_e:"))
+    async def cb_edit_entry(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        try:
+            entry_id = int(callback.data.split(":")[1])
+        except (ValueError, IndexError):
+            return
+        user_states[uid] = {"state": STATES["CORRECT_ENTRY"], "data": {"entry_id": entry_id}}
+        await callback.message.answer(
+            "✏️ *Введи новое значение калорий:*\n_/cancel — отмена_",
+            parse_mode="Markdown",
+        )
+
+    @dp.callback_query(F.data.startswith("del_e:"))
+    async def cb_del_entry_ask(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        try:
+            entry_id = int(callback.data.split(":")[1])
+        except (ValueError, IndexError):
+            return
+        entries = get_entries_today(uid)
+        entry = next((e for e in entries if e["id"] == entry_id), None)
+        if not entry:
+            await callback.message.answer("Запись не найдена.")
+            return
+        name = (entry["food_name"] or "запись")[:30]
+        kcal = entry["calories"] or 0
+        await callback.message.answer(
+            f"🗑 Удалить *{name} — {kcal} ккал*?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"del_e_ok:{entry_id}"),
+                InlineKeyboardButton(text="❌ Нет", callback_data="del_e_cancel"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data.startswith("del_e_ok:"))
+    async def cb_del_entry_ok(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer("Удалено ✅")
+        try:
+            entry_id = int(callback.data.split(":")[1])
+        except (ValueError, IndexError):
+            return
+        delete_entry(entry_id)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await _show_diary(callback.message.answer, uid)
+
+    @dp.callback_query(F.data == "del_e_cancel")
+    async def cb_del_entry_cancel(callback: CallbackQuery):
+        await callback.answer("Отменено")
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+
+    @dp.callback_query(F.data == "reset_day")
+    async def cb_reset_day_ask(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        macros = get_daily_macros(uid)
+        total = macros["kcal"]
+        await callback.message.answer(
+            f"🗑 *Сбросить весь день?*\n\nБудут удалены все записи за сегодня ({total} ккал).\nОтменить это действие нельзя.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Да, сбросить", callback_data="reset_day_ok"),
+                InlineKeyboardButton(text="❌ Нет", callback_data="del_e_cancel"),
+            ]]),
+        )
+
+    @dp.callback_query(F.data == "reset_day_ok")
+    async def cb_reset_day_ok(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer("День сброшен ✅")
+        reset_today_entries(uid)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(
+            "✅ *День сброшен*\n\nВсе записи за сегодня удалены. Начинай заново 💪",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(uid == ADMIN_ID),
+        )
+
     # ── correct entry callback ─────────────────────────────────────────────────
     @dp.callback_query(F.data.startswith("correct:"))
     async def cb_correct_entry(callback: CallbackQuery):
@@ -1821,7 +1959,8 @@ async def main():
                     f"{score_line}{comment_line}"
                     f"\n\n_💡 Установи цель в ⚙️ Профиль_"
                 )
-            await message.answer(text_out, parse_mode="Markdown")
+            await message.answer(text_out, parse_mode="Markdown",
+                                  reply_markup=progress_inline_keyboard())
             return
 
         if text == BTN_PROFILE:
@@ -2097,6 +2236,7 @@ async def main():
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(uid == ADMIN_ID),
             )
+            await _show_diary(message.answer, uid)
             return
 
         # ── Weight log ─────────────────────────────────────────────────────────
