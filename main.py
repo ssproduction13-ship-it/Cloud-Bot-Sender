@@ -40,9 +40,7 @@ from db import (
     get_active_users,
     record_usage,
     get_daily_usage,
-    get_daily_calories,
     get_daily_macros,
-    get_entries_today,
     get_weekly_stats,
     get_total_stats,
     register_referral,
@@ -79,8 +77,8 @@ STREAK_MILESTONES = {
 CHEAT_KEYWORDS = [
     "бургер", "гамбургер", "чизбургер", "kfc", "mcdonald", "макдональдс",
     "пицца", "чипсы", "картофель фри", "фри", "шоколад", "конфеты", "торт",
-    "пончик", "доnut", "мороженое", "fast food", "фастфуд", "нагетсы",
-    "хот-дог", "hotdog", "картошка фри", "сникерс", "Kit Kat",
+    "пончик", "donut", "мороженое", "fast food", "фастфуд", "нагетсы",
+    "хот-дог", "hotdog", "картошка фри", "сникерс", "kit kat",
 ]
 SUGAR_KEYWORDS = ["сахар", "конфеты", "сладкое", "торт", "пирожное", "газировка", "кола"]
 
@@ -95,21 +93,46 @@ openai_client = AsyncOpenAI(
 user_states: dict[int, dict] = {}
 
 STATES = {
-    "GOAL_ENTER":       "goal_enter",
-    "CALC_AGE":         "calc_age",
-    "CALC_WEIGHT":      "calc_weight",
-    "CALC_HEIGHT":      "calc_height",
-    "MANUAL_ENTRY":     "manual_entry",
-    "CORRECT_ENTRY":    "correct_entry",
-    "WEIGHT_LOG":       "weight_log",
+    "GOAL_ENTER":             "goal_enter",
+    "CALC_AGE":               "calc_age",
+    "CALC_WEIGHT":            "calc_weight",
+    "CALC_HEIGHT":            "calc_height",
+    "MANUAL_ENTRY":           "manual_entry",
+    "CORRECT_ENTRY":          "correct_entry",
+    "WEIGHT_LOG":             "weight_log",
     # Onboarding
-    "ONBOARD_WEIGHT":   "onboard_weight",
-    "ONBOARD_HEIGHT":   "onboard_height",
-    "ONBOARD_AGE":      "onboard_age",
+    "ONBOARD_WEIGHT":         "onboard_weight",
+    "ONBOARD_HEIGHT":         "onboard_height",
+    "ONBOARD_AGE":            "onboard_age",
+    "ONBOARD_GOAL_TYPE":      "onboard_goal_type",
+    "ONBOARD_WAIT_GENDER":    "onboard_wait_gender",
+    "ONBOARD_WAIT_ACTIVITY":  "onboard_wait_activity",
+    # Goal-calc flow
+    "CALC_GENDER":            "calc_gender",
+    "GOAL_ASK":               "goal_ask",
     # Admin
-    "ADMIN_GIVE_DAYS":  "admin_give_days",
-    "ADMIN_BROADCAST":  "admin_broadcast",
+    "ADMIN_GIVE_DAYS":        "admin_give_days",
+    "ADMIN_BROADCAST":        "admin_broadcast",
 }
+
+# State TTL: auto-expire stale FSM states after 1 hour of inactivity
+_STATE_TTL_SECONDS = 3600
+
+
+def _get_state(uid: int) -> dict:
+    """Return user FSM state, evicting entries older than _STATE_TTL_SECONDS."""
+    s = user_states.get(uid)
+    if not s:
+        return {}
+    ts = s.get("_ts")
+    if ts and (datetime.utcnow() - ts).total_seconds() > _STATE_TTL_SECONDS:
+        user_states.pop(uid, None)
+        return {}
+    return s
+
+
+def _set_state(uid: int, state: str, data: dict | None = None):
+    user_states[uid] = {"state": state, "data": data or {}, "_ts": datetime.utcnow()}
 
 # ── Кнопки меню ──────────────────────────────────────────────────────────────
 BTN_PHOTO    = "📸 Анализ фото"
@@ -348,17 +371,18 @@ async def notify_admin(bot: Bot, text: str, markup=None):
 
 
 def access_check(user_row) -> tuple[bool, str]:
+    """Check access using the already-fetched user dict — no extra DB queries."""
     if user_row is None:
         return False, "not_registered"
     s = user_row["status"]
     if s == "blocked":   return False, "blocked"
     if s == "pending":   return False, "pending"
     if s == "paid":
-        if check_subscription_expired(user_row["telegram_id"]):
+        if check_subscription_expired(user_row):  # pass dict, avoids extra get_user()
             return False, "sub_expired"
         return True, "paid"
     if s == "beta":
-        if is_trial_expired(user_row["telegram_id"]):
+        if is_trial_expired(user_row):            # pass dict, avoids extra get_user()
             return False, "trial_expired"
         return True, "beta"
     return False, "unknown"
@@ -382,10 +406,14 @@ async def deny(message: Message, reason: str):
         await message.answer("Напиши /start для регистрации.")
 
 
-def daily_progress_text(uid: int) -> str:
-    macros = get_daily_macros(uid)
+def daily_progress_text(uid: int, user: dict | None = None,
+                        macros: dict | None = None) -> str:
+    """Build progress block. Pass pre-fetched user/macros to avoid extra DB queries."""
+    if macros is None:
+        macros = get_daily_macros(uid)
+    if user is None:
+        user = get_user(uid)
     total = macros["kcal"]
-    user = get_user(uid)
     goal = user["daily_goal"] if user else None
     goal_protein = user.get("protein_goal") if user else None
     streak = user.get("streak_days", 0) if user else 0
@@ -427,16 +455,6 @@ def result_keyboard(entry_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✏️ Исправить калории", callback_data=f"correct:{entry_id}")
     ]])
-
-
-def ref_keyboard(uid: int) -> InlineKeyboardMarkup:
-    link = ref_link(uid)
-    share_text = "Считаю калории по фото 📸 Попробуй бесплатно:"
-    share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(share_text)}"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)],
-        [InlineKeyboardButton(text="🔗 Моя ссылка", url=link)],
-    ])
 
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
@@ -549,7 +567,7 @@ def calc_tdee(gender: str, age: int, weight: float, height: float,
 
 
 async def start_onboarding(bot: Bot, uid: int, name: str):
-    user_states[uid] = {"state": "onboard_goal_type", "data": {}}
+    _set_state(uid, STATES["ONBOARD_GOAL_TYPE"])
     await bot.send_message(
         uid,
         f"Привет, {name}! 👋\n\n"
@@ -559,6 +577,56 @@ async def start_onboarding(bot: Bot, uid: int, name: str):
         parse_mode="Markdown",
         reply_markup=goal_type_keyboard(),
     )
+
+
+# ── Общий хелпер доставки результата анализа еды ─────────────────────────────
+
+
+async def _deliver_analysis(
+    message: Message,
+    uid: int,
+    user: dict,
+    display: str,
+    kcal, protein, fat, carbs,
+    food_name: str | None,
+    thinking_msg,
+):
+    """Record, streak, send result, fun reaction, milestone. DRY for all 3 entry points."""
+    entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
+    streak, milestone = update_streak(uid, user=user) if kcal else (0, False)
+
+    # Re-fetch macros after recording the new entry
+    macros = get_daily_macros(uid)
+    # Refresh user for up-to-date streak
+    fresh_user = get_user(uid)
+    progress = daily_progress_text(uid, user=fresh_user, macros=macros)
+    hint = "\n\n_Установи норму в ⚙️ Профиль_" if not (user.get("daily_goal")) else ""
+
+    try:
+        await thinking_msg.delete()
+    except Exception:
+        pass
+
+    user_states.pop(uid, None)
+    await message.answer(
+        display + progress + hint,
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(uid == ADMIN_ID),
+    )
+    if kcal:
+        await message.answer("Неточно? Можно исправить:", reply_markup=result_keyboard(entry_id))
+
+    if food_name:
+        fun = detect_fun_reaction(food_name.lower(), kcal)
+        if fun:
+            await message.answer(fun)
+
+    if milestone and streak in STREAK_MILESTONES:
+        await message.answer(
+            f"🎉 *Ачивка разблокирована!*\n"
+            f"_{STREAK_MILESTONES[streak]}_\n\nПродолжай! 💪",
+            parse_mode="Markdown",
+        )
 
 
 # ── Планировщик ───────────────────────────────────────────────────────────────
@@ -586,6 +654,7 @@ async def send_morning_checkins(bot: Bot):
             )
         except Exception as e:
             log.debug(f"morning {uid}: {e}")
+        await asyncio.sleep(0.05)  # stay under Telegram 30 msg/sec limit
 
 
 async def send_evening_summaries(bot: Bot):
@@ -631,6 +700,7 @@ async def send_evening_summaries(bot: Bot):
             )
         except Exception as e:
             log.debug(f"evening {uid}: {e}")
+        await asyncio.sleep(0.05)  # Telegram rate limit
 
 
 async def send_weekly_reports(bot: Bot):
@@ -666,6 +736,7 @@ async def send_weekly_reports(bot: Bot):
             )
         except Exception as e:
             log.debug(f"weekly {uid}: {e}")
+        await asyncio.sleep(0.05)  # Telegram rate limit
 
 
 # ─────────────────── Бот ─────────────────────────────────────────────────────
@@ -1512,41 +1583,8 @@ async def main():
                 photo_bytes = (await client.get(url, timeout=15)).content
 
             display, kcal, protein, fat, carbs, food_name = await analyze_food_photo(photo_bytes)
-            entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
-            streak, milestone = update_streak(uid) if kcal else (0, False)
-
-            progress = daily_progress_text(uid)
-            hint = "\n\n_Установи норму в ⚙️ Профиль_" if user["daily_goal"] is None else ""
-
-            try:
-                await thinking_msg.delete()
-            except Exception:
-                pass
-
-            await message.answer(
-                display + progress + hint,
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
-            if kcal:
-                await message.answer(
-                    "Результат неточный? Можно исправить:",
-                    reply_markup=result_keyboard(entry_id),
-                )
-
-            # Viral/fun reaction
-            if food_name:
-                fun = detect_fun_reaction(food_name.lower(), kcal)
-                if fun:
-                    await message.answer(fun)
-
-            if milestone and streak in STREAK_MILESTONES:
-                await message.answer(
-                    f"🎉 *Ачивка разблокирована!*\n"
-                    f"_{STREAK_MILESTONES[streak]}_\n\n"
-                    f"Продолжай — ты на правильном пути! 💪",
-                    parse_mode="Markdown",
-                )
+            await _deliver_analysis(message, uid, user, display, kcal, protein,
+                                    fat, carbs, food_name, thinking_msg)
 
         except Exception as e:
             log.error(f"photo analysis error: {e}")
@@ -1625,7 +1663,7 @@ async def main():
             if not ok:
                 await deny(message, reason)
                 return
-            user_states[uid] = {"state": STATES["MANUAL_ENTRY"], "data": {}}
+            _set_state(uid, STATES["MANUAL_ENTRY"])
             await message.answer(
                 "✍️ Напиши, что съел:\n\n"
                 "_Например: «борщ 300г», «яблоко», «овсянка 100г с молоком»_\n\n"
@@ -1722,7 +1760,7 @@ async def main():
 
     async def _show_premium_screen(send_fn, uid: int, user):
         status = user["status"] if user else "pending"
-        is_premium = status == "paid" and not check_subscription_expired(uid)
+        is_premium = status == "paid" and not check_subscription_expired(user)  # pass dict
 
         if is_premium:
             exp_dt = datetime.fromisoformat(user["expires_at"])
@@ -1813,6 +1851,7 @@ async def main():
                     sent += 1
                 except Exception:
                     failed += 1
+                await asyncio.sleep(0.05)  # Telegram rate limit
             user_states.pop(uid, None)
             await message.answer(f"📡 Рассылка: ✅{sent} ❌{failed}")
             return
@@ -2002,48 +2041,13 @@ async def main():
                     )
                     return
 
-            thinking_msg = await message.answer(
-                "🤔 *Считаю...*",
-                parse_mode="Markdown",
-            )
+            thinking_msg = await message.answer("🤔 *Считаю...*", parse_mode="Markdown")
             try:
                 display, kcal, protein, fat, carbs, food_name = await analyze_food_text(text)
-                entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
-                streak, milestone = update_streak(uid) if kcal else (0, False)
-
-                progress = daily_progress_text(uid)
-                hint = "\n\n_Установи норму в ⚙️ Профиль_" if user["daily_goal"] is None else ""
-
-                try:
-                    await thinking_msg.delete()
-                except Exception:
-                    pass
-
-                user_states.pop(uid, None)
-                await message.answer(
-                    display + progress + hint,
-                    parse_mode="Markdown",
-                    reply_markup=main_keyboard(uid == ADMIN_ID),
-                )
-                if kcal:
-                    await message.answer(
-                        "Неточно? Можно исправить:",
-                        reply_markup=result_keyboard(entry_id),
-                    )
-
-                if food_name:
-                    fun = detect_fun_reaction(food_name.lower(), kcal)
-                    if fun:
-                        await message.answer(fun)
-
-                if milestone and streak in STREAK_MILESTONES:
-                    await message.answer(
-                        f"🎉 *Ачивка!* _{STREAK_MILESTONES[streak]}_\n\nПродолжай! 💪",
-                        parse_mode="Markdown",
-                    )
-
+                await _deliver_analysis(message, uid, user, display, kcal, protein,
+                                        fat, carbs, food_name, thinking_msg)
             except Exception as e:
-                log.error(f"text analysis error: {e}")
+                log.error(f"manual entry analysis error: {e}")
                 try:
                     await thinking_msg.delete()
                 except Exception:
@@ -2071,36 +2075,8 @@ async def main():
         thinking_msg = await message.answer("🤔 *Считаю...*", parse_mode="Markdown")
         try:
             display, kcal, protein, fat, carbs, food_name = await analyze_food_text(text)
-            entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
-            streak, milestone = update_streak(uid) if kcal else (0, False)
-
-            progress = daily_progress_text(uid)
-            hint = "\n\n_Установи норму в ⚙️ Профиль_" if user["daily_goal"] is None else ""
-
-            try:
-                await thinking_msg.delete()
-            except Exception:
-                pass
-
-            await message.answer(
-                display + progress + hint,
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
-            if kcal:
-                await message.answer("Неточно? Можно исправить:",
-                                     reply_markup=result_keyboard(entry_id))
-
-            if food_name:
-                fun = detect_fun_reaction(food_name.lower(), kcal)
-                if fun:
-                    await message.answer(fun)
-
-            if milestone and streak in STREAK_MILESTONES:
-                await message.answer(
-                    f"🎉 *Ачивка!* _{STREAK_MILESTONES[streak]}_\n\nПродолжай! 💪",
-                    parse_mode="Markdown",
-                )
+            await _deliver_analysis(message, uid, user, display, kcal, protein,
+                                    fat, carbs, food_name, thinking_msg)
         except Exception as e:
             log.error(f"default text error: {e}")
             try:
