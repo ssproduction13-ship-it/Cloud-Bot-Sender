@@ -246,9 +246,10 @@ def ref_keyboard(uid: int) -> InlineKeyboardMarkup:
     link = ref_link(uid)
     share_text = "Считаю калории по фото еды 🍽 Попробуй бесплатно:"
     share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(share_text)}"
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)],
+        [InlineKeyboardButton(text="🔗 Открыть мою ссылку",  url=link)],
+    ])
 
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
@@ -1180,18 +1181,32 @@ async def main():
         uid = message.from_user.id
         upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
-        ok, reason = access_check(user)
-        if not ok:
-            await deny(message, reason)
+
+        # Реферальная программа доступна всем зарегистрированным пользователям,
+        # даже тем, у кого истёк триал — это их способ получить бесплатные дни.
+        if not user or user.get("status") == "blocked":
+            await message.answer("⛔ Доступ заблокирован.")
             return
+
         stats = get_referral_stats(uid)
         link = ref_link(uid)
+
+        # Показываем статус пользователя чтобы мотивировать делиться ссылкой
+        status = user.get("status", "pending")
+        if status == "pending":
+            access_note = "\n\n⏳ Жди одобрения — а пока отправляй ссылку друзьям!"
+        elif status == "trial_expired" or (status == "paid" and check_subscription_expired(uid)):
+            access_note = f"\n\n💡 *Пригласи {max(1, 4 - stats['total'])} друга — и получишь дни доступа бесплатно!*"
+        else:
+            access_note = ""
+
         await message.answer(
             f"👥 *Пригласи друга — получи дни бесплатно!*\n\n"
-            f"🔗 Твоя ссылка:\n{link}\n\n"
+            f"🔗 Твоя ссылка:\n`{link}`\n\n"
             f"🎁 За регистрацию друга — *+{REFERRAL_JOIN_BONUS_DAYS} дня*\n"
             f"💰 За его оплату подписки — ещё *+{REFERRAL_BONUS_DAYS} дней*\n\n"
-            f"📊 Приглашено: {stats['total']}  |  Оплатили: {stats['paid']}",
+            f"📊 Приглашено: *{stats['total']}*  |  Оплатили: *{stats['paid']}*"
+            f"{access_note}",
             parse_mode="Markdown",
             reply_markup=ref_keyboard(uid),
         )
