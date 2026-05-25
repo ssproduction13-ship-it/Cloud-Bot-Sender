@@ -57,12 +57,12 @@ from db import (
     delete_entry,
     reset_today_entries,
     set_user_goals,
-      get_expiring_users,
-      get_winback_users,
-      get_streak_users_no_log_today,
-      add_water_log,
-      get_water_today,
-      get_users_by_segment,
+    get_expiring_users,
+    get_winback_users,
+    get_streak_users_no_log_today,
+    add_water_log,
+    get_water_today,
+    get_users_by_segment,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
