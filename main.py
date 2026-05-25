@@ -34,6 +34,9 @@ from db import (
     is_trial_expired,
     set_daily_goal,
     mark_onboarded,
+    save_onboard_state,
+    load_onboard_state,
+    clear_onboard_state,
     activate_subscription,
     check_subscription_expired,
     get_all_users,
@@ -121,6 +124,15 @@ STATES = {
 # State TTL: auto-expire stale FSM states after 1 hour of inactivity
 _STATE_TTL_SECONDS = 3600
 
+# Onboarding states that need to survive bot restarts
+ONBOARD_STATES = {
+    STATES["ONBOARD_WEIGHT"],
+    STATES["ONBOARD_HEIGHT"],
+    STATES["ONBOARD_AGE"],
+    STATES["ONBOARD_WAIT_GENDER"],
+    STATES["ONBOARD_WAIT_ACTIVITY"],
+}
+
 
 def _get_state(uid: int) -> dict:
     """Return user FSM state, evicting entries older than _STATE_TTL_SECONDS."""
@@ -136,6 +148,32 @@ def _get_state(uid: int) -> dict:
 
 def _set_state(uid: int, state: str, data: dict | None = None):
     user_states[uid] = {"state": state, "data": data or {}, "_ts": datetime.utcnow()}
+
+
+def _set_onboard_state(uid: int, state: str, data: dict) -> None:
+    """Write onboarding state to memory AND persist to DB so restarts don't lose progress."""
+    user_states[uid] = {"state": state, "data": data, "_ts": datetime.utcnow()}
+    try:
+        save_onboard_state(uid, state, data)
+    except Exception as exc:
+        log.warning(f"save_onboard_state uid={uid}: {exc}")
+
+
+def _try_restore_onboard(uid: int) -> None:
+    """If the user has no in-memory state, try to restore onboarding progress from DB."""
+    if uid in user_states:
+        return
+    try:
+        persisted = load_onboard_state(uid)
+    except Exception:
+        return
+    if persisted and persisted.get("state") in ONBOARD_STATES:
+        user_states[uid] = {
+            "state": persisted["state"],
+            "data": persisted["data"],
+            "_ts": datetime.utcnow(),
+        }
+        log.info(f"Restored onboard state uid={uid} state={persisted['state']}")
 
 # ── Кнопки меню ──────────────────────────────────────────────────────────────
 BTN_PHOTO    = "📸 Анализ фото"
@@ -635,6 +673,49 @@ def calc_tdee(gender: str, age: int, weight: float, height: float,
 
 
 async def start_onboarding(bot: Bot, uid: int, name: str):
+    # Check if the user has unfinished onboarding progress persisted in DB
+    try:
+        persisted = load_onboard_state(uid)
+    except Exception:
+        persisted = None
+
+    if persisted and persisted.get("state") in ONBOARD_STATES:
+        # Restore to memory and prompt to continue
+        st = persisted["state"]
+        d  = persisted["data"]
+        user_states[uid] = {"state": st, "data": d, "_ts": datetime.utcnow()}
+
+        step_msgs = {
+            STATES["ONBOARD_WEIGHT"]:        "Введи свой текущий вес в кг _(например: 75 или 75.5)_:",
+            STATES["ONBOARD_HEIGHT"]:        "Введи рост в см _(например: 175)_:",
+            STATES["ONBOARD_AGE"]:           "Введи возраст _(например: 28)_:",
+            STATES["ONBOARD_WAIT_GENDER"]:   None,
+            STATES["ONBOARD_WAIT_ACTIVITY"]: None,
+        }
+        prompt = step_msgs.get(st)
+        if prompt:
+            await bot.send_message(
+                uid,
+                f"Продолжаем настройку профиля 👇\n\n{prompt}",
+                parse_mode="Markdown",
+            )
+        elif st == STATES["ONBOARD_WAIT_GENDER"]:
+            await bot.send_message(
+                uid,
+                "Продолжаем настройку профиля 👇\n\nУкажи пол:",
+                parse_mode="Markdown",
+                reply_markup=gender_keyboard(),
+            )
+        elif st == STATES["ONBOARD_WAIT_ACTIVITY"]:
+            await bot.send_message(
+                uid,
+                "Продолжаем настройку профиля 👇\n\nУровень активности:",
+                parse_mode="Markdown",
+                reply_markup=activity_keyboard(),
+            )
+        return
+
+    # Fresh onboarding start
     _set_state(uid, STATES["ONBOARD_GOAL_TYPE"])
     await bot.send_message(
         uid,
@@ -1364,11 +1445,9 @@ async def main():
                 reply_markup=main_keyboard(is_admin))
             return
 
-        # Ask for weight — set _from_onboard=True from the very start
-        user_states[uid] = {
-            "state": STATES["ONBOARD_WEIGHT"],
-            "data": {"goal_type": goal_type, "_from_onboard": True},
-        }
+        # Ask for weight — set _from_onboard=True from the very start and persist to DB
+        _set_onboard_state(uid, STATES["ONBOARD_WEIGHT"],
+                           {"goal_type": goal_type, "_from_onboard": True})
         await callback.message.edit_text(
             f"*{label}* — отличный выбор! 💪\n\n"
             f"Шаг 1/4 — введи свой текущий вес в кг:\n_(например: 75 или 75.5)_",
@@ -1416,11 +1495,7 @@ async def main():
         # Onboarding flow: after age we wait for gender → then activity
         if cur_state == STATES["ONBOARD_WAIT_GENDER"]:
             cur_data["_from_onboard"] = True          # ensure flag is present
-            user_states[uid] = {
-                "state": STATES["ONBOARD_WAIT_ACTIVITY"],
-                "data":  cur_data,
-                "_ts":   datetime.utcnow(),
-            }
+            _set_onboard_state(uid, STATES["ONBOARD_WAIT_ACTIVITY"], cur_data)
             await callback.message.edit_text(
                 f"{'♂️' if gender == 'm' else '♀️'} Записал!\n\nУровень активности:",
                 parse_mode="Markdown",
@@ -1482,6 +1557,10 @@ async def main():
             # so even if the message delivery fails, the user won't loop in onboarding
             if is_onboarding:
                 mark_onboarded(uid)
+                try:
+                    clear_onboard_state(uid)
+                except Exception:
+                    pass
 
             result_text = (
                 f"🔥 *Готово! Норма рассчитана*\n\n"
@@ -1507,6 +1586,10 @@ async def main():
             if is_onboarding:
                 try:
                     mark_onboarded(uid)
+                except Exception:
+                    pass
+                try:
+                    clear_onboard_state(uid)
                 except Exception:
                     pass
             try:
@@ -2162,6 +2245,12 @@ async def main():
 
         upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
         user = get_user(uid)
+
+        # If the user is still in onboarding and the bot was restarted (state lost),
+        # try to restore their progress from the persistent DB store
+        if not user.get("onboarded"):
+            _try_restore_onboard(uid)
+
         state_data = user_states.get(uid, {})
         state = state_data.get("state")
 
@@ -2190,8 +2279,7 @@ async def main():
                 await message.answer("⚠️ Введи корректный вес от 20 до 400 кг (например: 75):")
                 return
             state_data["data"]["weight"] = weight
-            state_data["state"] = STATES["ONBOARD_HEIGHT"]
-            user_states[uid] = state_data
+            _set_onboard_state(uid, STATES["ONBOARD_HEIGHT"], state_data["data"])
             await message.answer(
                 f"Вес *{weight} кг* — записал ✅\n\nШаг 2/4 — рост в см:\n_(например: 175)_",
                 parse_mode="Markdown",
@@ -2208,8 +2296,7 @@ async def main():
                 await message.answer("⚠️ Введи корректный рост от 100 до 250 см (например: 175):")
                 return
             state_data["data"]["height"] = height
-            state_data["state"] = STATES["ONBOARD_AGE"]
-            user_states[uid] = state_data
+            _set_onboard_state(uid, STATES["ONBOARD_AGE"], state_data["data"])
             await message.answer(
                 f"Рост *{int(height)} см* — отлично ✅\n\nШаг 3/4 — сколько тебе лет?",
                 parse_mode="Markdown",
@@ -2226,10 +2313,8 @@ async def main():
                 await message.answer("⚠️ Введи возраст от 10 до 100:")
                 return
             state_data["data"]["age"] = age
-            # _from_onboard was set to True in cb_goal_type; keep it, just ensure it's here
             state_data["data"]["_from_onboard"] = True
-            state_data["state"] = STATES["ONBOARD_WAIT_GENDER"]
-            user_states[uid] = state_data
+            _set_onboard_state(uid, STATES["ONBOARD_WAIT_GENDER"], state_data["data"])
             await message.answer(
                 f"*{age} лет* — отлично! ✅\n\nШаг 4/4 — укажи пол для точного расчёта:",
                 parse_mode="Markdown",
