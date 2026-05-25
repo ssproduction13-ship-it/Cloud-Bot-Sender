@@ -215,6 +215,21 @@ def set_daily_goal(telegram_id, goal, protein_goal=None, goal_type=None,
         conn.commit()
 
 
+def clear_all_goals():
+    """Set daily_goal, protein_goal, goal_type, weight_kg, height_cm, age, gender to NULL for every user."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE users
+                SET daily_goal=NULL, protein_goal=NULL, goal_type=NULL,
+                    weight_kg=NULL, height_cm=NULL, age=NULL, gender=NULL
+            """)
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users")
+            return cur.fetchone()[0]
+
+
 def mark_onboarded(telegram_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
