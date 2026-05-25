@@ -1911,7 +1911,6 @@ async def main():
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)],
-                [InlineKeyboardButton(text="🔗 Открыть мою ссылку", url=link)],
             ]),
         )
 
