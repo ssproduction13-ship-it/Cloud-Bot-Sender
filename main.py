@@ -799,8 +799,9 @@ async def main():
         if not state:
             return
 
-        # Universal cancel inside any state
-        if text.lower() in ("отмена", "❌ отмена", "cancel", "отмен", "нет", "выход", "назад"):
+        # Universal cancel inside any state (catches /cancel command text too)
+        if text.lower() in ("отмена", "❌ отмена", "cancel", "/cancel", "отмен", "нет", "выход", "назад") \
+                or text.startswith("/"):
             user_states.pop(uid, None)
             await message.answer("❌ Отменено.", reply_markup=main_keyboard(uid == ADMIN_ID))
             return
