@@ -1,13 +1,32 @@
 import os
 import psycopg2
 import psycopg2.extras
+from contextlib import contextmanager
+from psycopg2.pool import ThreadedConnectionPool
 from datetime import datetime, timedelta, date
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
+_pool: ThreadedConnectionPool | None = None
 
+
+def _init_pool():
+    global _pool
+    if _pool is None:
+        _pool = ThreadedConnectionPool(1, 10, DATABASE_URL)
+
+
+@contextmanager
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    _init_pool()
+    conn = _pool.getconn()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _pool.putconn(conn)
 
 
 def init_db():
@@ -148,9 +167,10 @@ def approve_user(telegram_id, trial_days=3):
         conn.commit()
 
 
-def is_trial_expired(telegram_id):
-    user = get_user(telegram_id)
-    if not user or not user["trial_expires_at"]:
+def is_trial_expired(user_or_id) -> bool:
+    """Accept either a user dict (no extra DB query) or a telegram_id."""
+    user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
+    if not user or not user.get("trial_expires_at"):
         return True
     return datetime.utcnow() > datetime.fromisoformat(user["trial_expires_at"])
 
@@ -190,7 +210,7 @@ def mark_onboarded(telegram_id):
 def activate_subscription(telegram_id, days):
     user = get_user(telegram_id)
     now = datetime.utcnow()
-    if user and user["expires_at"]:
+    if user and user.get("expires_at"):
         try:
             current_exp = datetime.fromisoformat(user["expires_at"])
             base = max(current_exp, now)
@@ -208,9 +228,10 @@ def activate_subscription(telegram_id, days):
         conn.commit()
 
 
-def check_subscription_expired(telegram_id):
-    user = get_user(telegram_id)
-    if not user or not user["expires_at"]:
+def check_subscription_expired(user_or_id) -> bool:
+    """Accept either a user dict (no extra DB query) or a telegram_id."""
+    user = user_or_id if isinstance(user_or_id, dict) else get_user(user_or_id)
+    if not user or not user.get("expires_at"):
         return True
     return datetime.utcnow() > datetime.fromisoformat(user["expires_at"])
 
@@ -247,11 +268,13 @@ def get_active_users():
 # ── Streak ─────────────────────────────────────────────────────────────────
 
 
-def update_streak(telegram_id) -> tuple[int, bool]:
+def update_streak(telegram_id, user=None) -> tuple[int, bool]:
+    """Pass pre-fetched user dict to avoid an extra DB round-trip."""
     today = datetime.utcnow().strftime("%Y-%m-%d")
     yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    user = get_user(telegram_id)
+    if user is None:
+        user = get_user(telegram_id)
     if not user:
         return 0, False
 
@@ -322,17 +345,6 @@ def get_daily_usage(telegram_id):
                 (telegram_id, today),
             )
             return cur.fetchone()[0]
-
-
-def get_daily_calories(telegram_id):
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COALESCE(SUM(calories),0) FROM usage WHERE telegram_id=%s AND date=%s",
-                (telegram_id, today),
-            )
-            return int(cur.fetchone()[0])
 
 
 def get_daily_macros(telegram_id):
@@ -456,22 +468,27 @@ def get_weight_history(telegram_id, days=14):
 
 
 def get_total_stats():
+    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    yesterday_str = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    day7_str = yesterday_str  # D7: registered 7 days ago
+    day7_str = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM users")
-            total = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM users WHERE status='pending'")
-            pending = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM users WHERE status='beta'")
-            beta = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM users WHERE status='paid'")
-            paid = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM users WHERE status='blocked'")
-            blocked = cur.fetchone()[0]
-
-            today_str = datetime.utcnow().strftime("%Y-%m-%d")
-            yesterday_str = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
-            week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+            # All user status counts in a single query
+            cur.execute("""
+                SELECT
+                    COUNT(*)                                          AS total,
+                    COUNT(*) FILTER (WHERE status='pending')         AS pending,
+                    COUNT(*) FILTER (WHERE status='beta')            AS beta,
+                    COUNT(*) FILTER (WHERE status='paid')            AS paid,
+                    COUNT(*) FILTER (WHERE status='blocked')         AS blocked,
+                    COUNT(*) FILTER (WHERE DATE(created_at) = %s)   AS new_today
+                FROM users
+            """, (today_str,))
+            row = cur.fetchone()
+            total, pending, beta, paid, blocked, new_today = row
 
             cur.execute("SELECT COUNT(*) FROM usage WHERE date=%s", (today_str,))
             today_a = cur.fetchone()[0]
@@ -480,19 +497,17 @@ def get_total_stats():
             cur.execute("SELECT COUNT(*) FROM referrals WHERE paid=1")
             ref_paid = cur.fetchone()[0]
 
-            # DAU
             cur.execute(
                 "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date=%s", (today_str,)
             )
             dau = cur.fetchone()[0]
 
-            # WAU
             cur.execute(
                 "SELECT COUNT(DISTINCT telegram_id) FROM usage WHERE date >= %s", (week_ago,)
             )
             wau = cur.fetchone()[0]
 
-            # D1 retention: users who registered yesterday and used today
+            # D1 retention
             cur.execute(
                 """SELECT COUNT(*) FROM users u
                    WHERE DATE(u.created_at) = %s
@@ -508,8 +523,7 @@ def get_total_stats():
             d1_den = cur.fetchone()[0]
             d1_ret = round(d1_num / d1_den * 100) if d1_den else 0
 
-            # D7 retention: users who registered 7 days ago and used today
-            day7_str = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+            # D7 retention
             cur.execute(
                 """SELECT COUNT(*) FROM users u
                    WHERE DATE(u.created_at) = %s
@@ -525,17 +539,10 @@ def get_total_stats():
             d7_den = cur.fetchone()[0]
             d7_ret = round(d7_num / d7_den * 100) if d7_den else 0
 
-            # Avg streak among active users
             cur.execute(
                 "SELECT COALESCE(AVG(streak_days),0) FROM users WHERE status IN ('beta','paid')"
             )
             avg_streak = round(cur.fetchone()[0], 1)
-
-            # New users today
-            cur.execute(
-                "SELECT COUNT(*) FROM users WHERE DATE(created_at) = %s", (today_str,)
-            )
-            new_today = cur.fetchone()[0]
 
             return {
                 "total_users": total,
@@ -592,12 +599,11 @@ def get_referral_stats(telegram_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (telegram_id,)
-            )
-            total = cur.fetchone()[0]
-            cur.execute(
-                "SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND paid=1",
+                """SELECT
+                       COUNT(*)                           AS total,
+                       COUNT(*) FILTER (WHERE paid = 1)  AS paid
+                   FROM referrals WHERE referrer_id=%s""",
                 (telegram_id,),
             )
-            paid = cur.fetchone()[0]
-            return {"total": total, "paid": paid}
+            row = cur.fetchone()
+            return {"total": row[0], "paid": row[1]}
