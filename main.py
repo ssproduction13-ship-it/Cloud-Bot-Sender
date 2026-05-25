@@ -2232,7 +2232,6 @@ async def main():
                 parse_mode="Markdown",
                 reply_markup=main_keyboard(uid == ADMIN_ID),
             )
-            await _show_diary(message.answer, uid)
             return
 
         # ── Weight log ─────────────────────────────────────────────────────────
