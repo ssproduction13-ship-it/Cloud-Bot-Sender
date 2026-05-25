@@ -200,24 +200,24 @@ BTN_SUB      = "⭐ Premium"
 BTN_REF      = "🎁 Бонусы"
 BTN_PROFILE  = "⚙️ Профиль"
 BTN_ADMIN    = "🛠 Админка"
-  BTN_WATER    = "💧 Вода"
-  BTN_PLAN     = "🍽 План питания"
+BTN_WATER    = "💧 Вода"
+BTN_PLAN     = "🍽 План питания"
 
 MENU_BUTTONS = {
-      BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS,
-      BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
-      BTN_WATER, BTN_PLAN,
-  }
+    BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS,
+    BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
+    BTN_WATER, BTN_PLAN,
+}
 
 
 def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-      rows = [
-          [KeyboardButton(text=BTN_PHOTO),   KeyboardButton(text=BTN_MANUAL)],
-          [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
-          [KeyboardButton(text=BTN_WATER),   KeyboardButton(text=BTN_PLAN)],
-          [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
-      ]
-      return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+    rows = [
+        [KeyboardButton(text=BTN_PHOTO),   KeyboardButton(text=BTN_MANUAL)],
+        [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
+        [KeyboardButton(text=BTN_WATER),   KeyboardButton(text=BTN_PLAN)],
+        [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
+    ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 # ─────────────────── AI анализ ───────────────────────────────────────────────
