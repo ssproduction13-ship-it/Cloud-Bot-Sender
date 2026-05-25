@@ -1531,6 +1531,31 @@ async def main():
                 parse_mode="Markdown",
             )
 
+    # ── recalc_norm callback ───────────────────────────────────────────────────
+    @dp.callback_query(F.data == "recalc_norm")
+    async def cb_recalc_norm(callback: CallbackQuery):
+        uid = callback.from_user.id
+        await callback.answer()
+        try:
+            clear_onboard_state(uid)
+        except Exception:
+            pass
+        user_states.pop(uid, None)
+        await callback.message.answer(
+            "🔄 *Пересчитаем норму!*\n\nОтвечай на несколько вопросов — займёт меньше минуты ⚡",
+            parse_mode="Markdown",
+        )
+        await callback.message.answer(
+            "🎯 *Какова твоя цель?*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔥 Похудеть",       callback_data="ob_goal:lose")],
+                [InlineKeyboardButton(text="⚖️ Удержать вес",   callback_data="ob_goal:maintain")],
+                [InlineKeyboardButton(text="💪 Набрать массу",  callback_data="ob_goal:gain")],
+            ]),
+        )
+        _set_onboard_state(uid, "ob_goal", {})
+
     # ── buy_sub callback ───────────────────────────────────────────────────────
     @dp.callback_query(F.data == "buy_sub")
     async def cb_buy_sub(callback: CallbackQuery):
