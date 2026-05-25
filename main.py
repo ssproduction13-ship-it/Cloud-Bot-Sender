@@ -578,6 +578,7 @@ def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
 
 def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Пересчитать норму", callback_data="recalc_norm")],
         [InlineKeyboardButton(text="⚖️ Записать вес", callback_data="weight_opt")],
         [InlineKeyboardButton(text="📈 Неделя", callback_data="profile_week")],
         [InlineKeyboardButton(text="ℹ️ Статус подписки", callback_data="profile_status")],
