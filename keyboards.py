@@ -8,12 +8,12 @@ from config import (
 )
 from db import get_entries_today
 
-BTN_PHOTO    = "📸 Анализ фото"
+BTN_PHOTO    = "📸 Анализ еды"
 BTN_MANUAL   = "✍️ Вручную"
-BTN_PROGRESS = "📊 Мой прогресс"
+BTN_PROGRESS = "📊 Прогресс"
 BTN_SUB      = "⭐ Premium"
-BTN_REF      = "🎁 Бонусы"
-BTN_PROFILE  = "⚙️ Профиль"
+BTN_REF      = "👥 Рефералы"
+BTN_PROFILE  = "👤 Профиль"
 BTN_ADMIN    = "🛠 Админка"
 
 MENU_BUTTONS = {
@@ -26,7 +26,7 @@ def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text=BTN_PHOTO)],
         [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
-        [KeyboardButton(text=BTN_SUB),      KeyboardButton(text=BTN_REF)],
+        [KeyboardButton(text=BTN_REF),      KeyboardButton(text=BTN_SUB)],
     ]
     if is_admin:
         rows.append([KeyboardButton(text=BTN_ADMIN)])
@@ -70,7 +70,7 @@ def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
 def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Пересчитать норму", callback_data="recalc_norm")],
-        [InlineKeyboardButton(text="⚖️ Записать вес",      callback_data="weight_opt")],
+        [InlineKeyboardButton(text="⚖️ Записать вес",      callback_data="profile_weight")],
         [InlineKeyboardButton(text="📈 Неделя",            callback_data="profile_week")],
         [InlineKeyboardButton(text="🍽 План питания",      callback_data="show_meal_plan")],
         [InlineKeyboardButton(text="ℹ️ Статус подписки",  callback_data="profile_status")],
