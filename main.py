@@ -796,13 +796,6 @@ async def _deliver_analysis(
             log.debug(f"ai advice error: {adv_e}")
 
 
-    if streak > 0 and not milestone:
-        # Small reinforcement on streak update (not milestone days)
-        if streak in (3, 7, 14, 21, 30, 60, 90):
-            pass  # handled by milestone below
-        elif streak > 1:
-            await message.answer(f"🔥 Серия: *{streak} дней*", parse_mode="Markdown")
-
     if milestone and streak in STREAK_MILESTONES:
         await message.answer(
             f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
