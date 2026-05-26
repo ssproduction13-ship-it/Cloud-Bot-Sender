@@ -23,6 +23,8 @@ from keyboards import (
     BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS, BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
 )
 from services.state import user_states, _get_state, _set_state, _try_restore_onboard, _last_scan, SCAN_COOLDOWN_SEC
+
+_last_food_ctx: dict = {}  # stores last scan context per uid for optional buttons
 from services.ai_service import (
     analyze_food_photo, analyze_food_text, _validate_analysis, openai_client,
 )
@@ -249,6 +251,104 @@ async def _deliver_analysis(
         )
 
 
+
+  @router.callback_query(F.data == "scan_advice")
+  async def cb_scan_advice(callback: CallbackQuery):
+      uid = callback.from_user.id
+      await callback.answer()
+      ctx = _last_food_ctx.get(uid)
+      if not ctx:
+          await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
+          return
+      user       = ctx["user"]
+      food_name  = ctx["food_name"]
+      kcal       = ctx["kcal"]
+      protein    = ctx["protein"]
+      fat        = ctx["fat"]
+      carbs      = ctx["carbs"]
+      try:
+          goal         = user.get("daily_goal")
+          goal_protein = user.get("protein_goal")
+          macros_now   = get_daily_macros(uid)
+          weekly       = get_weekly_stats(uid)
+          patterns     = []
+          logged       = weekly.get("logged_days", 0)
+          if logged >= 3:
+              avg_p = weekly.get("avg_protein", 0)
+              avg_k = weekly.get("avg_kcal", 0)
+              if goal_protein and avg_p >= goal_protein * 0.85:
+                  patterns.append(f"уже {logged} дня подряд держит белок в норме")
+              elif goal_protein and avg_p < goal_protein * 0.55:
+                  patterns.append(f"регулярно не добирает белок (avg {avg_p}г)")
+              if goal and avg_k > goal * 1.15:
+                  patterns.append(f"среднее за неделю выше нормы ({avg_k} ккал/д)")
+          context_line = "Паттерн: " + "; ".join(patterns) + ".\n" if patterns else ""
+          advice_prompt = (
+              f"{context_line}"
+              f"Только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
+              f"Итог дня: {macros_now['kcal']} ккал"
+              + (f" из {goal}" if goal else "")
+              + f", белок {macros_now['protein']}г"
+              + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
+              "Дай ОДИН короткий совет что съесть следующим приёмом для баланса. "
+              "Говори как живой тренер: коротко, конкретно, по-человечески. 1-2 предложения, один эмодзи."
+          )
+          advice_resp = await openai_client.chat.completions.create(
+              model="meta-llama/llama-4-scout-17b-16e-instruct",
+              messages=[
+                  {"role": "system", "content": "Ты — дружелюбный AI-компаньон по питанию. Короткие живые советы. По-русски."},
+                  {"role": "user",   "content": advice_prompt},
+              ],
+              max_tokens=120,
+          )
+          advice_text = advice_resp.choices[0].message.content or ""
+          if advice_text.strip():
+              await callback.message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
+      except Exception as adv_e:
+          log.debug(f"ai advice error: {adv_e}")
+          await callback.message.answer("⚠️ Не удалось получить совет. Попробуй позже.")
+
+
+  @router.callback_query(F.data == "scan_share")
+  async def cb_scan_share(callback: CallbackQuery):
+      uid = callback.from_user.id
+      await callback.answer()
+      ctx = _last_food_ctx.get(uid)
+      if not ctx:
+          await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
+          return
+      import urllib.parse as _urlp
+      from config import BOT_USERNAME, REFERRAL_JOIN_BONUS_DAYS
+      food_name = ctx["food_name"]
+      kcal      = ctx["kcal"]
+      protein   = ctx["protein"]
+      fat       = ctx["fat"]
+      carbs     = ctx["carbs"]
+      macros_parts = []
+      if protein: macros_parts.append(f"Б {round(protein)}г")
+      if fat:     macros_parts.append(f"Ж {round(fat)}г")
+      if carbs:   macros_parts.append(f"У {round(carbs)}г")
+      macros_line = " · ".join(macros_parts)
+      ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
+      share_text = (
+          f"🍽 {food_name} — {kcal} ккал\n"
+          + (f"{macros_line}\n\n" if macros_line else "\n")
+          + f"Считаю КБЖУ с AI за секунды 📸"
+      )
+      if ref_link:
+          share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+      else:
+          share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
+      _rbd = REFERRAL_JOIN_BONUS_DAYS
+      _rbd_word = "день" if _rbd % 10 == 1 and _rbd % 100 != 11 else "дня" if _rbd % 10 in (2, 3, 4) and _rbd % 100 not in (12, 13, 14) else "дней"
+      await callback.message.answer(
+          f"📤 Поделись с другом — получи +{_rbd} {_rbd_word}!",
+          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+              InlineKeyboardButton(text="Отправить другу →", url=share_url),
+          ]]),
+      )
+
+  
 @router.callback_query(F.data == "food_photo_mode")
 async def cb_food_photo_mode(callback: CallbackQuery):
     uid  = callback.from_user.id
