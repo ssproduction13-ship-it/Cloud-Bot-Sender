@@ -53,13 +53,6 @@ def calc_daily_score(kcal: int, protein: float, fat: float, carbs: float,
     return min(score, 100)
 
 
-def score_emoji(score: int) -> str:
-    if score >= 85: return "🔥"
-    if score >= 70: return "✅"
-    if score >= 50: return "🌱"
-    return "💤"
-
-
 def format_score(score_100: int) -> float:
     """Convert 0-100 score to 5.0-10.0 display scale. Minimum 5.0."""
     return max(round(score_100 / 10, 1), 5.0)
