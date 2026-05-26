@@ -145,210 +145,159 @@ async def _deliver_analysis(
         pass
 
     user_states.pop(uid, None)
-    await message.answer(
-        display + progress + hint,
-        parse_mode="Markdown",
-        reply_markup=main_keyboard(uid == ADMIN_ID),
+
+      # Optional action buttons
+      is_premium = user.get("status") == "paid" and not check_subscription_expired(user)
+      action_btns = []
+      if is_premium:
+          action_btns.append(InlineKeyboardButton(text="💡 Совет", callback_data="scan_advice"))
+      if kcal and food_name:
+          action_btns.append(InlineKeyboardButton(text="📤 Поделиться", callback_data="scan_share"))
+
+      if action_btns:
+          _last_food_ctx[uid] = {
+              "food_name": food_name, "kcal": kcal,
+              "protein": protein, "fat": fat, "carbs": carbs,
+              "user": user,
+          }
+          result_markup = InlineKeyboardMarkup(inline_keyboard=[action_btns])
+      else:
+          result_markup = main_keyboard(uid == ADMIN_ID)
+
+      await message.answer(
+          display + progress + hint,
+          parse_mode="Markdown",
+          reply_markup=result_markup,
+      )
+
+      if food_name:
+          fun = detect_fun_reaction(food_name.lower(), kcal)
+          if fun:
+              await message.answer(fun)
+
+      # Streak milestone message
+      if milestone and streak in STREAK_MILESTONES:
+          await message.answer(
+              f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
+              parse_mode="Markdown",
+          )
+
+      # Scan count milestones
+      total_scans = get_user_scan_count(uid)
+      if total_scans in (10, 25, 50, 100):
+          await message.answer(
+              f"📸 *Уже {total_scans} анализов еды!*\n\nОтличная привычка — продолжай! 🔥",
+              parse_mode="Markdown",
+          )
+
+      # New daily protein record
+      if protein and protein > 0 and macros["protein"] > prev_protein_best and macros["protein"] >= 80:
+          await message.answer(
+              f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
+              f"Лучший результат — так держать! 💪",
+              parse_mode="Markdown",
+          )
+
+
+
+@router.callback_query(F.data == "scan_advice")
+async def cb_scan_advice(callback: CallbackQuery):
+    uid = callback.from_user.id
+    await callback.answer()
+    ctx = _last_food_ctx.get(uid)
+    if not ctx:
+        await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
+        return
+    user       = ctx["user"]
+    food_name  = ctx["food_name"]
+    kcal       = ctx["kcal"]
+    protein    = ctx["protein"]
+    fat        = ctx["fat"]
+    carbs      = ctx["carbs"]
+    try:
+        goal         = user.get("daily_goal")
+        goal_protein = user.get("protein_goal")
+        macros_now   = get_daily_macros(uid)
+        weekly       = get_weekly_stats(uid)
+        patterns     = []
+        logged       = weekly.get("logged_days", 0)
+        if logged >= 3:
+            avg_p = weekly.get("avg_protein", 0)
+            avg_k = weekly.get("avg_kcal", 0)
+            if goal_protein and avg_p >= goal_protein * 0.85:
+                patterns.append(f"уже {logged} дня подряд держит белок в норме")
+            elif goal_protein and avg_p < goal_protein * 0.55:
+                patterns.append(f"регулярно не добирает белок (avg {avg_p}г)")
+            if goal and avg_k > goal * 1.15:
+                patterns.append(f"среднее за неделю выше нормы ({avg_k} ккал/д)")
+        context_line = "Паттерн: " + "; ".join(patterns) + ".\n" if patterns else ""
+        advice_prompt = (
+            f"{context_line}"
+            f"Только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
+            f"Итог дня: {macros_now['kcal']} ккал"
+            + (f" из {goal}" if goal else "")
+            + f", белок {macros_now['protein']}г"
+            + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
+            "Дай ОДИН короткий совет что съесть следующим приёмом для баланса. "
+            "Говори как живой тренер: коротко, конкретно, по-человечески. 1-2 предложения, один эмодзи."
+        )
+        advice_resp = await openai_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {"role": "system", "content": "Ты — дружелюбный AI-компаньон по питанию. Короткие живые советы. По-русски."},
+                {"role": "user",   "content": advice_prompt},
+            ],
+            max_tokens=120,
+        )
+        advice_text = advice_resp.choices[0].message.content or ""
+        if advice_text.strip():
+            await callback.message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
+    except Exception as adv_e:
+        log.debug(f"ai advice error: {adv_e}")
+        await callback.message.answer("⚠️ Не удалось получить совет. Попробуй позже.")
+
+
+@router.callback_query(F.data == "scan_share")
+async def cb_scan_share(callback: CallbackQuery):
+    uid = callback.from_user.id
+    await callback.answer()
+    ctx = _last_food_ctx.get(uid)
+    if not ctx:
+        await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
+        return
+    import urllib.parse as _urlp
+    from config import BOT_USERNAME, REFERRAL_JOIN_BONUS_DAYS
+    food_name = ctx["food_name"]
+    kcal      = ctx["kcal"]
+    protein   = ctx["protein"]
+    fat       = ctx["fat"]
+    carbs     = ctx["carbs"]
+    macros_parts = []
+    if protein: macros_parts.append(f"Б {round(protein)}г")
+    if fat:     macros_parts.append(f"Ж {round(fat)}г")
+    if carbs:   macros_parts.append(f"У {round(carbs)}г")
+    macros_line = " · ".join(macros_parts)
+    ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
+    share_text = (
+        f"🍽 {food_name} — {kcal} ккал\n"
+        + (f"{macros_line}\n\n" if macros_line else "\n")
+        + f"Считаю КБЖУ с AI за секунды 📸"
+    )
+    if ref_link:
+        share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+    else:
+        share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
+    _rbd = REFERRAL_JOIN_BONUS_DAYS
+    _rbd_word = "день" if _rbd % 10 == 1 and _rbd % 100 != 11 else "дня" if _rbd % 10 in (2, 3, 4) and _rbd % 100 not in (12, 13, 14) else "дней"
+    await callback.message.answer(
+        f"📤 Поделись с другом — получи +{_rbd} {_rbd_word}!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Отправить другу →", url=share_url),
+        ]]),
     )
 
-    if food_name:
-        fun = detect_fun_reaction(food_name.lower(), kcal)
-        if fun:
-            await message.answer(fun)
-
-    # AI nutrition advice for premium users
-    if (not check_subscription_expired(user)) and user.get("status") == "paid":
-        try:
-            goal         = user.get("daily_goal")
-            goal_protein = user.get("protein_goal")
-            macros_now   = get_daily_macros(uid)
-            weekly       = get_weekly_stats(uid)
-            patterns     = []
-            logged       = weekly.get("logged_days", 0)
-            if logged >= 3:
-                avg_p = weekly.get("avg_protein", 0)
-                avg_k = weekly.get("avg_kcal", 0)
-                if goal_protein and avg_p >= goal_protein * 0.85:
-                    patterns.append(f"уже {logged} дня подряд держит белок в норме")
-                elif goal_protein and avg_p < goal_protein * 0.55:
-                    patterns.append(f"регулярно не добирает белок (avg {avg_p}г)")
-                if goal and avg_k > goal * 1.15:
-                    patterns.append(f"среднее за неделю выше нормы ({avg_k} ккал/д)")
-            context_line = "Паттерн: " + "; ".join(patterns) + ".\n" if patterns else ""
-            advice_prompt = (
-                f"{context_line}"
-                f"Только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
-                f"Итог дня: {macros_now['kcal']} ккал"
-                + (f" из {goal}" if goal else "")
-                + f", белок {macros_now['protein']}г"
-                + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
-                "Дай ОДИН короткий совет что съесть следующим приёмом для баланса. "
-                "Говори как живой тренер: коротко, конкретно, по-человечески. 1-2 предложения, один эмодзи."
-            )
-            advice_resp = await openai_client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=[
-                    {"role": "system", "content": "Ты — дружелюбный AI-компаньон по питанию. Короткие живые советы. По-русски."},
-                    {"role": "user",   "content": advice_prompt},
-                ],
-                max_tokens=120,
-            )
-            advice_text = advice_resp.choices[0].message.content or ""
-            if advice_text.strip():
-                await message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
-        except Exception as adv_e:
-            log.debug(f"ai advice error: {adv_e}")
-
-    # P6: Streak milestone message
-    if milestone and streak in STREAK_MILESTONES:
-        await message.answer(
-            f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
-            parse_mode="Markdown",
-        )
-
-    # P6: Scan count milestones
-    total_scans = get_user_scan_count(uid)
-    if total_scans in (10, 25, 50, 100):
-        await message.answer(
-            f"📸 *Уже {total_scans} анализов еды!*\n\nОтличная привычка — продолжай! 🔥",
-            parse_mode="Markdown",
-        )
-
-    # P6: New daily protein record
-    if protein and protein > 0 and macros["protein"] > prev_protein_best and macros["protein"] >= 80:
-        await message.answer(
-            f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
-            f"Лучший результат — так держать! 💪",
-            parse_mode="Markdown",
-        )
-
-    # Share button
-    if kcal and food_name:
-        import urllib.parse as _urlp
-        from config import BOT_USERNAME, REFERRAL_JOIN_BONUS_DAYS
-        macros_parts = []
-        if protein: macros_parts.append(f"Б {round(protein)}г")
-        if fat:     macros_parts.append(f"Ж {round(fat)}г")
-        if carbs:   macros_parts.append(f"У {round(carbs)}г")
-        macros_line = " · ".join(macros_parts)
-        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
-        share_text = (
-            f"🍽 {food_name} — {kcal} ккал\n"
-            + (f"{macros_line}\n\n" if macros_line else "\n")
-            + f"Считаю КБЖУ с AI за секунды 📸"
-        )
-        if ref_link:
-            share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
-        else:
-            share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
-        _rbd = REFERRAL_JOIN_BONUS_DAYS
-        _rbd_word = "день" if _rbd % 10 == 1 and _rbd % 100 != 11 else "дня" if _rbd % 10 in (2, 3, 4) and _rbd % 100 not in (12, 13, 14) else "дней"
-        await message.answer(
-            f"📤 Поделись с другом — получи +{_rbd} {_rbd_word}!",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="Отправить другу →", url=share_url),
-            ]]),
-        )
 
 
-
-  @router.callback_query(F.data == "scan_advice")
-  async def cb_scan_advice(callback: CallbackQuery):
-      uid = callback.from_user.id
-      await callback.answer()
-      ctx = _last_food_ctx.get(uid)
-      if not ctx:
-          await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
-          return
-      user       = ctx["user"]
-      food_name  = ctx["food_name"]
-      kcal       = ctx["kcal"]
-      protein    = ctx["protein"]
-      fat        = ctx["fat"]
-      carbs      = ctx["carbs"]
-      try:
-          goal         = user.get("daily_goal")
-          goal_protein = user.get("protein_goal")
-          macros_now   = get_daily_macros(uid)
-          weekly       = get_weekly_stats(uid)
-          patterns     = []
-          logged       = weekly.get("logged_days", 0)
-          if logged >= 3:
-              avg_p = weekly.get("avg_protein", 0)
-              avg_k = weekly.get("avg_kcal", 0)
-              if goal_protein and avg_p >= goal_protein * 0.85:
-                  patterns.append(f"уже {logged} дня подряд держит белок в норме")
-              elif goal_protein and avg_p < goal_protein * 0.55:
-                  patterns.append(f"регулярно не добирает белок (avg {avg_p}г)")
-              if goal and avg_k > goal * 1.15:
-                  patterns.append(f"среднее за неделю выше нормы ({avg_k} ккал/д)")
-          context_line = "Паттерн: " + "; ".join(patterns) + ".\n" if patterns else ""
-          advice_prompt = (
-              f"{context_line}"
-              f"Только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
-              f"Итог дня: {macros_now['kcal']} ккал"
-              + (f" из {goal}" if goal else "")
-              + f", белок {macros_now['protein']}г"
-              + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
-              "Дай ОДИН короткий совет что съесть следующим приёмом для баланса. "
-              "Говори как живой тренер: коротко, конкретно, по-человечески. 1-2 предложения, один эмодзи."
-          )
-          advice_resp = await openai_client.chat.completions.create(
-              model="meta-llama/llama-4-scout-17b-16e-instruct",
-              messages=[
-                  {"role": "system", "content": "Ты — дружелюбный AI-компаньон по питанию. Короткие живые советы. По-русски."},
-                  {"role": "user",   "content": advice_prompt},
-              ],
-              max_tokens=120,
-          )
-          advice_text = advice_resp.choices[0].message.content or ""
-          if advice_text.strip():
-              await callback.message.answer(f"💡 _{advice_text.strip()}_", parse_mode="Markdown")
-      except Exception as adv_e:
-          log.debug(f"ai advice error: {adv_e}")
-          await callback.message.answer("⚠️ Не удалось получить совет. Попробуй позже.")
-
-
-  @router.callback_query(F.data == "scan_share")
-  async def cb_scan_share(callback: CallbackQuery):
-      uid = callback.from_user.id
-      await callback.answer()
-      ctx = _last_food_ctx.get(uid)
-      if not ctx:
-          await callback.message.answer("⚠️ Контекст устарел — отправь новое фото.")
-          return
-      import urllib.parse as _urlp
-      from config import BOT_USERNAME, REFERRAL_JOIN_BONUS_DAYS
-      food_name = ctx["food_name"]
-      kcal      = ctx["kcal"]
-      protein   = ctx["protein"]
-      fat       = ctx["fat"]
-      carbs     = ctx["carbs"]
-      macros_parts = []
-      if protein: macros_parts.append(f"Б {round(protein)}г")
-      if fat:     macros_parts.append(f"Ж {round(fat)}г")
-      if carbs:   macros_parts.append(f"У {round(carbs)}г")
-      macros_line = " · ".join(macros_parts)
-      ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
-      share_text = (
-          f"🍽 {food_name} — {kcal} ккал\n"
-          + (f"{macros_line}\n\n" if macros_line else "\n")
-          + f"Считаю КБЖУ с AI за секунды 📸"
-      )
-      if ref_link:
-          share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
-      else:
-          share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
-      _rbd = REFERRAL_JOIN_BONUS_DAYS
-      _rbd_word = "день" if _rbd % 10 == 1 and _rbd % 100 != 11 else "дня" if _rbd % 10 in (2, 3, 4) and _rbd % 100 not in (12, 13, 14) else "дней"
-      await callback.message.answer(
-          f"📤 Поделись с другом — получи +{_rbd} {_rbd_word}!",
-          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-              InlineKeyboardButton(text="Отправить другу →", url=share_url),
-          ]]),
-      )
-
-  
 @router.callback_query(F.data == "food_photo_mode")
 async def cb_food_photo_mode(callback: CallbackQuery):
     uid  = callback.from_user.id
