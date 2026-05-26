@@ -25,7 +25,7 @@ router = Router()
 _utcnow = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-async def _send_status(send_fn, uid: int, user: dict):
+async def _send_status(send_fn, uid: int, user: dict, reply_markup=None):
     status = user["status"]
     used   = get_daily_usage(uid)
     macros = get_daily_macros(uid)
@@ -53,6 +53,7 @@ async def _send_status(send_fn, uid: int, user: dict):
             f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})"
             f"{streak_block}",
             parse_mode="Markdown",
+            reply_markup=reply_markup,
         )
     elif status == "beta" and user.get("trial_expires_at"):
         trial_dt  = datetime.fromisoformat(user["trial_expires_at"])
@@ -66,6 +67,7 @@ async def _send_status(send_fn, uid: int, user: dict):
             f"👥 Рефералов: {ref_s['total']} (оплатили: {ref_s['paid']})"
             f"{streak_block}",
             parse_mode="Markdown",
+            reply_markup=reply_markup,
         )
     else:
         await send_fn(
@@ -76,22 +78,18 @@ async def _send_status(send_fn, uid: int, user: dict):
             f"{streak_block}\n\n"
             f"Оформи подписку — ⭐ Premium",
             parse_mode="Markdown",
+            reply_markup=reply_markup,
         )
 
 
 @router.callback_query(F.data == "weight_opt")
 async def cb_weight_opt(callback: CallbackQuery):
-    uid  = callback.from_user.id
+    uid = callback.from_user.id
     await callback.answer()
-    user = get_user(uid)
-    last_weight = f"  (последний: *{user['weight_kg']} кг*)" if user and user.get("weight_kg") else ""
+    _set_state(uid, STATES["WEIGHT_LOG"])
     await callback.message.answer(
-        f"⚖️ *Хочешь записать вес сегодня?*{last_weight}",
+        "⚖️ Введи свой текущий вес в кг:\n_(например: 75 или 75.5)_",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Да",          callback_data="profile_weight"),
-            InlineKeyboardButton(text="⏭ Не сегодня",  callback_data="weight_skip"),
-        ]]),
     )
 
 
