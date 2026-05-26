@@ -110,6 +110,9 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👥 Все юзеры",  callback_data="adm_users"),
             InlineKeyboardButton(text="📡 Рассылка",   callback_data="adm_broadcast"),
         ],
+        [
+            InlineKeyboardButton(text="📈 Воронка",    callback_data="adm_funnel"),
+        ],
     ])
 
 
