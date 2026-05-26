@@ -381,6 +381,41 @@ async def cb_bcast_segment(callback: CallbackQuery):
     )
 
 
+@router.callback_query(F.data == "adm_funnel")
+async def cb_admin_funnel(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+    await callback.answer()
+    from db import get_events_summary, get_total_stats
+    s = get_total_stats()
+    total       = s["total_users"]
+    ob_done     = get_events_summary("onboarding_completed", days=30)
+    first_scan  = get_events_summary("first_food_scan", days=30)
+    second_scan = get_events_summary("second_food_scan", days=30)
+    d1          = s["d1_retention"]
+    d7          = s["d7_retention"]
+    prem_click  = get_events_summary("premium_clicked", days=30)
+    prem_buy    = get_events_summary("premium_purchased", days=30)
+
+    def pct(num, base):
+        return f"{round(num * 100 / base)}%" if base else "—"
+
+    text = (
+        "📈 *Воронка (30 дней)*\n\n"
+        f"👥 Всего юзеров:        *{total}*\n"
+        f"✅ Онбординг пройден:   *{ob_done}* ({pct(ob_done, total)})\n"
+        f"📸 Первый скан:         *{first_scan}* ({pct(first_scan, ob_done)})\n"
+        f"🔄 Второй скан:         *{second_scan}* ({pct(second_scan, first_scan)})\n"
+        f"📅 D1 retention:        *{d1}%*\n"
+        f"📅 D7 retention:        *{d7}%*\n"
+        f"⭐ Нажали Premium:      *{prem_click}* ({pct(prem_click, first_scan)})\n"
+        f"💎 Оформили Premium:    *{prem_buy}* ({pct(prem_buy, prem_click)})\n"
+    )
+    await callback.message.answer(text, parse_mode="Markdown",
+                                   reply_markup=admin_panel_keyboard())
+
+
 @router.callback_query(F.data.in_({"adm_stats", "adm_users", "adm_beta",
                                     "adm_paid", "adm_refresh", "adm_broadcast"}))
 async def cb_admin_panel(callback: CallbackQuery):
