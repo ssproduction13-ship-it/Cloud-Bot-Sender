@@ -27,15 +27,15 @@ async def send_morning_checkins(bot: Bot):
         name   = (user.get("first_name") or "").split()[0] or "Привет"
         try:
             track_event(uid, "daily_active_user")
-            goal_block = (
-                f"Цель сегодня: *{goal} ккал*"
-                + (f" · *{goal_protein}г белка*" if goal_protein else "")
-                if goal
-                else "Цель не задана — настрой в профиле"
-            )
+            if goal:
+                goal_block = f"Цель сегодня:\n*{goal} ккал*"
+                if goal_protein:
+                    goal_block += f" · *{goal_protein}г белка*"
+            else:
+                goal_block = "Цель не задана — настрой в профиле"
             streak_line = (
                 f"\n{streak_emoji(streak)} Серия *{streak} "
-                f"{'день' if streak == 1 else 'дня' if 2 <= streak <= 4 else 'дней'}* — держи темп."
+                f"{'день' if streak == 1 else 'дня' if 2 <= streak <= 4 else 'дней'}* подряд — держи темп!"
                 if streak > 1 else ""
             )
             await bot.send_message(
@@ -43,7 +43,7 @@ async def send_morning_checkins(bot: Bot):
                 f"☀️ *Доброе утро, {name}*\n\n"
                 f"{goal_block}"
                 f"{streak_line}\n\n"
-                f"Начни с завтрака — отправь фото 📸",
+                f"Отправь фото завтрака — начнём день правильно 📸",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -70,26 +70,25 @@ async def send_evening_summaries(bot: Bot):
             fs      = format_score(score)
             comment = ai_score_comment(score, macros["protein"], macros["carbs"], total, goal, None)
 
-            kcal_line  = f"🍽 *{total}* ккал" + (f" / {goal}" if goal else "")
-            prot_line  = (
-                f"\n🥩 Белок: *{macros['protein']}г*"
-                + (f" / {goal_protein}г" if goal_protein else "")
+            kcal_line = f"🍽 *{total} ккал*" + (f" из {goal}" if goal else "")
+            prot_line = (
+                f"\n🥩 *{round(macros['protein'])}г белка*"
+                + (f" из {goal_protein}г" if goal_protein else "")
                 if macros["protein"] > 0 else ""
             )
-            s_line     = (
+            s_line = (
                 f"\n🔥 Серия: *{streak} "
-                f"{'день' if streak==1 else 'дня' if 2<=streak<=4 else 'дней'}*"
+                f"{'день' if streak==1 else 'дня' if 2<=streak<=4 else 'дней'}* подряд"
                 if streak > 0 else ""
             )
-            score_note = f"\n\n{comment}" if comment else ""
+            comment_line = f"\n\n{comment}" if comment else ""
             await bot.send_message(
                 uid,
                 f"📊 *Итоги дня*\n\n"
                 f"{kcal_line}"
                 f"{prot_line}"
                 f"{s_line}"
-                f"\n🎯 Balance Score: *{fs}/10*"
-                f"{score_note}",
+                f"{comment_line}",
                 parse_mode="Markdown",
             )
         except Exception as e:
