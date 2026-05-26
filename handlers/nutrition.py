@@ -525,7 +525,7 @@ async def handle_text(message: Message, bot: Bot):
         macros   = get_daily_macros(uid)
         progress = daily_progress_text(uid, user=user, macros=macros)
         await message.answer(
-            f"📊 *Прогресс за сегодня*{progress}",
+            progress.strip(),
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="📅 История 7 дней", callback_data="history7")],
@@ -551,10 +551,8 @@ async def handle_text(message: Message, bot: Bot):
             await message.answer("Напиши /start для регистрации.")
             return
         from handlers.profile import _send_status
-        await _send_status(message.answer, uid, user)
-        await message.answer(
-            "⚙️ *Профиль*",
-            parse_mode="Markdown",
+        await _send_status(
+            message.answer, uid, user,
             reply_markup=profile_keyboard(uid, has_goal=bool(user.get("daily_goal"))),
         )
         return
