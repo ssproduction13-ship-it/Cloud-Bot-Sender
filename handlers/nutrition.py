@@ -224,18 +224,23 @@ async def _deliver_analysis(
     if kcal and food_name:
         import urllib.parse as _urlp
         from config import BOT_USERNAME
-        prot_str = f" · Б{round(protein)}г" if protein else ""
-        fat_str  = f" · Ж{round(fat)}г"    if fat    else ""
-        carb_str = f" · У{round(carbs)}г"  if carbs  else ""
+        macros_parts = []
+        if protein: macros_parts.append(f"Б {round(protein)}г")
+        if fat:     macros_parts.append(f"Ж {round(fat)}г")
+        if carbs:   macros_parts.append(f"У {round(carbs)}г")
+        macros_line = " · ".join(macros_parts)
         share_text = (
-            f"🥗 Засканировал {food_name} в NutriAI\n"
-            f"{kcal} ккал{prot_str}{fat_str}{carb_str}\n\n"
-            f"Трекай питание с AI 👉 @{BOT_USERNAME or 'NutriAI'}"
+            f"🍽 {food_name} — {kcal} ккал\n"
+            + (f"{macros_line}\n\n" if macros_line else "\n")
+            + f"Считаю КБЖУ с AI за секунды 📸"
         )
-        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me/share"
-        share_url = f"https://t.me/share/url?url={_urlp.quote(bot_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
+        if bot_link:
+            share_url = f"https://t.me/share/url?url={_urlp.quote(bot_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+        else:
+            share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
         await message.answer(
-            "📤 _Поделись с друзьями — возможно, им тоже понравится_",
+            "📤 _Поделись результатом с друзьями_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="📤 Поделиться", url=share_url),
