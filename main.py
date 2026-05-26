@@ -25,6 +25,13 @@ from aiogram.types import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 sys.path.insert(0, os.path.dirname(__file__))
+from utils.formatting import (
+    calc_daily_score, format_score, score_emoji,
+    ai_score_comment, detect_fun_reaction,
+    CHEAT_KEYWORDS, SUGAR_KEYWORDS,
+)
+from utils.helpers import user_label, ref_link, streak_emoji, progress_bar
+
 from db import (
     init_db,
     upsert_user,
@@ -62,6 +69,7 @@ from db import (
     get_streak_users_no_log_today,
     add_water_log,
     get_users_by_segment,
+    track_event,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -355,29 +363,16 @@ async def analyze_food_text(description: str):
 # ─────────────────── Хелперы ─────────────────────────────────────────────────
 
 
-def user_label(row) -> str:
-    name = row["first_name"] or ""
-    un = f"@{row['username']}" if row["username"] else f"id{row['telegram_id']}"
-    return f"{name} ({un})"
+# user_label → utils/helpers.py
 
 
-def ref_link(uid: int) -> str:
-    bot_un = BOT_USERNAME.lstrip("@") or "YOUR_BOT"
-    return f"https://t.me/{bot_un}?start=ref_{uid}"
+# ref_link → utils/helpers.py
 
 
-def streak_emoji(streak: int) -> str:
-    if streak >= 30: return "🏆"
-    if streak >= 14: return "🥇"
-    if streak >= 7:  return "🥈"
-    if streak >= 3:  return "🥉"
-    return "🔥"
+# streak_emoji → utils/helpers.py
 
 
-def progress_bar(current: int, goal: int, width: int = 10) -> str:
-    filled = min(int(width * current / goal), width) if goal else 0
-    pct = min(int(100 * current / goal), 100) if goal else 0
-    return f"{'█' * filled}{'░' * (width - filled)} {pct}%"
+# progress_bar → utils/helpers.py
 
 
 def calc_daily_score(kcal: int, protein: float, fat: float, carbs: float,
@@ -422,39 +417,56 @@ def calc_daily_score(kcal: int, protein: float, fat: float, carbs: float,
     return min(score, 100)
 
 
-def score_emoji(score: int) -> str:
-    if score >= 85: return "🔥"
-    if score >= 70: return "✅"
-    if score >= 50: return "🌱"
-    return "💤"
+# score_emoji → utils/formatting.py
 
 
-def format_score(score_100: int) -> float:
-    """Convert 0-100 score to 5.0-10.0 display scale (never below 5.0)."""
-    return max(round(score_100 / 10, 1), 5.0)
+# format_score → utils/formatting.py
 
 
 def ai_score_comment(score_100: int, protein: float, carbs: float, kcal: int,
                      goal_kcal: int | None, food_name: str | None) -> str:
-    """Return a short friendly AI-coach comment based on the day's nutrition."""
+    """Return a short companion-style comment based on the day's nutrition."""
+    import random as _rnd
     fn = (food_name or "").lower()
     cheat = any(k in fn for k in ["бургер","пицца","чипсы","фри","kfc","mcdonald","нагетсы"])
     sugar = any(k in fn for k in ["сахар","конфеты","торт","пирожное","кола","газировка"])
     if score_100 >= 85:
-        return "Отличный день — так и держи! 💪"
+        return _rnd.choice([
+            "Идеальный день 🔥 Так и держи.",
+            "Отличный результат 💪 Всё в норме.",
+            "Вот это баланс 👌 Продолжай.",
+        ])
     if cheat:
-        return "Чит-мил? Раз в неделю — это нормально 😄 Завтра вернёмся в ритм."
+        return _rnd.choice([
+            "Чит-мил — это нормально 😄 Завтра возвращаемся в ритм.",
+            "Раз в неделю — не страшно 👊 Главное не делать это системой.",
+        ])
     if sugar:
-        return "Многовато сахара, но по калориям всё ок 👌 Запей водой."
+        return "Многовато сахара, но по калориям норм 👌"
     if protein > 0 and protein < 60:
-        return "Белка чуть маловато — добавь яйца, творог или курицу 🥩"
+        return _rnd.choice([
+            "Белка маловато — добавь яйца, творог или курицу 🥩",
+            "Подтяни белок — он держит мышцы и сытость 💪",
+        ])
     if goal_kcal and kcal > goal_kcal * 1.2:
-        return "Немного перебор сегодня — завтра чуть полегче, всё выровняется 👍"
+        return _rnd.choice([
+            "Чуть перебор — завтра полегче, всё выровняется 👍",
+            "Один день не ломает прогресс. Завтра вернёмся в норму 🙏",
+        ])
     if goal_kcal and kcal < goal_kcal * 0.7:
-        return "Маловато калорий — не голодай, это замедляет прогресс 🙏"
+        return _rnd.choice([
+            "Маловато калорий — не голодай, это замедляет прогресс 🌱",
+            "Дефицит должен быть мягким — не пропускай приёмы пищи 👌",
+        ])
     if score_100 >= 70:
-        return "Хороший выбор. Главное — стабильность, а не идеальность 🌱"
-    return "Держишь курс — продолжай, всё идёт как надо 🔥"
+        return _rnd.choice([
+            "Хороший день. Стабильность — это и есть прогресс 🌱",
+            "Всё на месте. Продолжай в том же духе 👌",
+        ])
+    return _rnd.choice([
+        "Держишь курс — всё идёт как надо 🔥",
+        "Небольшие улучшения каждый день — вот что работает 💪",
+    ])
 
 
 def detect_fun_reaction(food_name_lower: str, kcal: int | None) -> str | None:
@@ -656,6 +668,7 @@ def user_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
 
 
 async def start_onboarding(bot: Bot, uid: int, name: str):
+    track_event(uid, "onboarding_started")
     try:
         clear_onboard_state(uid)
     except Exception:
@@ -705,7 +718,11 @@ async def _deliver_analysis(
         await message.answer(err_msg)
         return
     entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
+    if get_daily_usage(uid) == 1:
+        track_event(uid, "first_food_scan")
     streak, milestone = update_streak(uid, user=user) if kcal else (0, False)
+    if streak > 0:
+        track_event(uid, "streak_updated", {"streak": streak, "milestone": milestone})
 
     # Re-fetch macros after recording the new entry
     macros = get_daily_macros(uid)
@@ -732,25 +749,42 @@ async def _deliver_analysis(
         if fun:
             await message.answer(fun)
 
-    # AI nutrition advice for premium users
+    # AI nutrition advice for premium users (companion-style with context memory)
     if (not check_subscription_expired(user)) and user.get("status") == "paid":
         try:
-            goal = user.get("daily_goal")
+            goal        = user.get("daily_goal")
             goal_protein = user.get("protein_goal")
-            macros_now = get_daily_macros(uid)
+            macros_now  = get_daily_macros(uid)
+            weekly      = get_weekly_stats(uid)
+
+            # Build pattern context — gives AI a "memory" feel
+            patterns = []
+            logged = weekly.get("logged_days", 0)
+            if logged >= 3:
+                avg_p = weekly.get("avg_protein", 0)
+                avg_k = weekly.get("avg_kcal", 0)
+                if goal_protein and avg_p >= goal_protein * 0.85:
+                    patterns.append(f"уже {logged} дня подряд держит белок в норме")
+                elif goal_protein and avg_p < goal_protein * 0.55:
+                    patterns.append(f"регулярно не добирает белок (avg {avg_p}г)")
+                if goal and avg_k > goal * 1.15:
+                    patterns.append(f"среднее за неделю выше нормы ({avg_k} ккал/д)")
+            context_line = "Паттерн: " + "; ".join(patterns) + ".\n" if patterns else ""
+
             advice_prompt = (
-                f"Пользователь только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
-                f"Дневной итог: {macros_now['kcal']} ккал"
+                f"{context_line}"
+                f"Только что съел: {food_name or 'блюдо'} ({kcal} ккал, Б{protein}г Ж{fat}г У{carbs}г).\n"
+                f"Итог дня: {macros_now['kcal']} ккал"
                 + (f" из {goal}" if goal else "")
                 + f", белок {macros_now['protein']}г"
                 + (f" из {goal_protein}г" if goal_protein else "") + ".\n"
-                "Дай ОДИН конкретный совет (1-2 предложения) что съесть следующим приёмом пищи "
-                "для баланса КБЖУ. Без воды, только практика. Один эмодзи."
+                "Дай ОДИН короткий совет что съесть следующим приёмом для баланса. "
+                "Говори как живой тренер: коротко, конкретно, по-человечески. 1-2 предложения, один эмодзи."
             )
             advice_resp = await openai_client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=[
-                    {"role": "system", "content": "Краткий нутрициолог. Только конкретные советы."},
+                    {"role": "system", "content": "Ты — дружелюбный AI-компаньон по питанию. Короткие живые советы, не справочный текст. По-русски."},
                     {"role": "user", "content": advice_prompt},
                 ],
                 max_tokens=120,
@@ -1864,6 +1898,7 @@ async def main():
     async def cb_buy_sub(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+        track_event(uid, "premium_initiated", {"plan": callback.data})
         parts = callback.data.split(":")
         plan = parts[1] if len(parts) > 1 else "30"
         plans = {
@@ -1885,6 +1920,7 @@ async def main():
     async def cb_ref_screen(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+        track_event(uid, "referral_opened")
         await _show_referral(callback.message.answer, uid)
 
     # ── Diary: show today's entries ────────────────────────────────────────────
@@ -2146,6 +2182,7 @@ async def main():
             activity=activity,
         )
         mark_onboarded(uid)
+        track_event(uid, "onboarding_completed")
         try:
             clear_onboard_state(uid)
         except Exception:
@@ -2240,6 +2277,7 @@ async def main():
     async def cb_show_premium(callback: CallbackQuery):
         uid = callback.from_user.id
         await callback.answer()
+        track_event(uid, "premium_clicked")
         user = get_user(uid)
         await _show_premium_screen(callback.message.answer, uid, user)
 
