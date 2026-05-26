@@ -190,13 +190,6 @@ async def _deliver_analysis(
             parse_mode="Markdown",
         )
 
-    # New daily protein record
-    if protein and protein > 0 and macros["protein"] > prev_protein_best and macros["protein"] >= 80:
-        await message.answer(
-            f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
-            f"Лучший результат — так держать! 💪",
-            parse_mode="Markdown",
-        )
 
 
 
