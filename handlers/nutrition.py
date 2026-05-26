@@ -240,9 +240,7 @@ async def _deliver_analysis(
         else:
             share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
         await message.answer(
-            f"📤 *Поделись с другом — получи +{REFERRAL_JOIN_BONUS_DAYS} дней!*\n\n"
-            f"_Друг перейдёт по твоей ссылке → тебе начислятся бонусные дни_",
-            parse_mode="Markdown",
+            f"📤 Поделись с другом — получи +{REFERRAL_JOIN_BONUS_DAYS} дней!",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="📤 Поделиться и получить бонус", url=share_url),
             ]]),
