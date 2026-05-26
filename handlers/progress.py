@@ -43,31 +43,53 @@ async def cb_noop(callback: CallbackQuery):
 async def cb_history7(callback: CallbackQuery):
     uid = callback.from_user.id
     await callback.answer()
-    user  = get_user(uid)
-    goal  = user.get("daily_goal") if user else None
-    stats = get_weekly_stats(uid)
-    days  = stats["dates"]
-    daily = stats["daily"]
-    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-    lines = []
-    for d, data in zip(days, daily):
+    stats  = get_weekly_stats(uid)
+    days   = stats["dates"]
+    daily  = stats["daily"]
+    logged = stats["logged_days"]
+
+    if not logged:
+        await callback.message.answer(
+            "📅 *Последние дни*\n\n_Записей пока нет — начни сегодня!_",
+            parse_mode="Markdown",
+        )
+        return
+
+    day_names  = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    kcal_vals  = [d["kcal"] for d in daily]
+    lines      = []
+
+    for i, (d, data) in enumerate(zip(days, daily)):
         from datetime import date as _date
         dt   = _date.fromisoformat(d)
         dn   = day_names[dt.weekday()]
         kcal = data["kcal"]
+
         if kcal == 0:
-            lines.append(f"{dn} {dt.strftime('%d.%m')}  —")
-        elif goal:
-            lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal}* / {goal}")
+            lines.append(f"{dn} — нет записей")
+            continue
+
+        prev = next((kcal_vals[j] for j in range(i - 1, -1, -1) if kcal_vals[j] > 0), None)
+        if prev is None:
+            trend = ""
+        elif kcal > prev + 100:
+            trend = " 📈"
+        elif kcal < prev - 100:
+            trend = " 📉"
         else:
-            lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal} ккал*")
-    avg    = stats["avg_kcal"]
-    logged = stats["logged_days"]
-    avg_line = f"\nСредн: *{avg} ккал/день* · {logged}/7 дней залогировано" if logged else ""
-    await callback.message.answer(
-        "📅 *История за 7 дней*\n\n" + "\n".join(lines) + avg_line,
-        parse_mode="Markdown",
-    )
+            trend = " ➡️"
+
+        lines.append(f"{dn} — {kcal} ккал{trend}")
+
+    avg   = stats["avg_kcal"]
+    avg_p = round(stats.get("avg_protein") or 0)
+
+    text = "📅 *Последние дни*\n\n" + "\n".join(lines)
+    text += f"\n\n🔥 Среднее:\n*{avg} ккал*"
+    if avg_p:
+        text += f"\n\n🥩 Белок:\n*{avg_p} г/день*"
+
+    await callback.message.answer(text, parse_mode="Markdown")
 
 
 @router.callback_query(F.data == "diary")
