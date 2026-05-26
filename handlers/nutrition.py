@@ -18,10 +18,8 @@ from db import (
     update_streak, get_weekly_stats, check_subscription_expired, track_event,
     get_weight_history, add_weight_log,
 )
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-
 from keyboards import (
-    main_keyboard, premium_keyboard, profile_keyboard,
+    main_keyboard, premium_keyboard, profile_keyboard, progress_inline_keyboard,
     BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS, BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
 )
 from services.state import user_states, _get_state, _set_state, _try_restore_onboard, _last_scan, SCAN_COOLDOWN_SEC
@@ -594,10 +592,7 @@ async def handle_text(message: Message, bot: Bot):
         await message.answer(
             progress.strip(),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📅 История 7 дней", callback_data="history7")],
-                [InlineKeyboardButton(text="📓 Дневник",        callback_data="diary")],
-            ]),
+            reply_markup=progress_inline_keyboard(),
         )
         return
 
@@ -658,9 +653,9 @@ async def handle_text(message: Message, bot: Bot):
             pass
         await message.answer(
             "Не понял. Попробуй:\n"
-            "• отправить *фото* блюда 📸\n"
+            "• нажать *📸 Анализ еды* и выбрать способ\n"
             "• или написать что съел (например: «гречка 200г»)\n"
-            "• или нажать кнопку ✍️ Вручную",
+            "• или ввести только число калорий (например: 450)",
             parse_mode="Markdown",
             reply_markup=main_keyboard(uid == ADMIN_ID),
         )
