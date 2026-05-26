@@ -129,12 +129,13 @@ async def cb_del_entry_ask(callback: CallbackQuery):
         return
     name = (entry["food_name"] or "запись")[:30]
     kcal = entry["calories"] or 0
+    diary_msg_id = callback.message.message_id
     await callback.message.answer(
         f"🗑 Удалить *{name} — {kcal} ккал*?",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"del_e_ok:{entry_id}"),
-            InlineKeyboardButton(text="❌ Нет",         callback_data="del_e_cancel"),
+            InlineKeyboardButton(text="✅ Удалить", callback_data=f"del_e_ok:{entry_id}:{diary_msg_id}"),
+            InlineKeyboardButton(text="❌ Нет",     callback_data="del_e_cancel"),
         ]]),
     )
 
@@ -143,8 +144,10 @@ async def cb_del_entry_ask(callback: CallbackQuery):
 async def cb_del_entry_ok(callback: CallbackQuery):
     uid = callback.from_user.id
     await callback.answer("Удалено ✅")
+    parts = callback.data.split(":")
     try:
-        entry_id = int(callback.data.split(":")[1])
+        entry_id     = int(parts[1])
+        diary_msg_id = int(parts[2]) if len(parts) > 2 else None
     except (ValueError, IndexError):
         return
     delete_entry(entry_id)
@@ -152,7 +155,31 @@ async def cb_del_entry_ok(callback: CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-    await _show_diary(callback.message.answer, uid)
+    # Edit the original diary message in-place — no new message
+    if diary_msg_id:
+        entries = get_entries_today(uid)
+        chat_id = callback.message.chat.id
+        try:
+            if not entries:
+                await callback.bot.edit_message_text(
+                    "*Записей сегодня нет*\n\nОтправь фото или опиши блюдо — добавлю в дневник",
+                    chat_id=chat_id,
+                    message_id=diary_msg_id,
+                    parse_mode="Markdown",
+                )
+            else:
+                total = sum(e["calories"] or 0 for e in entries)
+                await callback.bot.edit_message_text(
+                    f"*Дневник — {total} ккал*",
+                    chat_id=chat_id,
+                    message_id=diary_msg_id,
+                    parse_mode="Markdown",
+                    reply_markup=diary_keyboard(entries),
+                )
+        except Exception:
+            pass
+    else:
+        await _show_diary(callback.message.answer, uid)
 
 
 @router.callback_query(F.data == "del_e_cancel")
