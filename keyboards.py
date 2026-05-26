@@ -10,7 +10,7 @@ from db import get_entries_today
 
 BTN_PHOTO    = "📸 Анализ еды"
 BTN_MANUAL   = "✍️ Вручную"
-BTN_PROGRESS = "📊 Прогресс"
+BTN_PROGRESS = "📋 Сегодня"
 BTN_SUB      = "⭐ Premium"
 BTN_REF      = "👥 Рефералы"
 BTN_PROFILE  = "👤 Профиль"
