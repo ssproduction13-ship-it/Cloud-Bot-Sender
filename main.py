@@ -61,8 +61,6 @@ from db import (
     get_winback_users,
     get_streak_users_no_log_today,
     add_water_log,
-    get_water_today,
-    reset_water_today,
     get_users_by_segment,
 )
 
@@ -70,6 +68,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 _utcnow = lambda: datetime.now(timezone.utc).replace(tzinfo=None)
+
+# Per-user scan cooldown (in-memory, resets on restart)
+_last_scan: dict[int, datetime] = {}
+SCAN_COOLDOWN_SEC = 4
 
 BOT_TOKEN     = os.environ["TELEGRAM_BOT_TOKEN"]
 ADMIN_ID      = int(os.environ["TELEGRAM_CHAT_ID"])
@@ -84,7 +86,6 @@ SUB_PRICE_3M          = 360   # 3 months (−20%)
 SUB_PRICE_12M         = 990   # 12 months (−45%)
 SUB_DAYS_3M           = 90
 SUB_DAYS_12M          = 365
-WATER_GOAL            = 8     # glasses per day
 
 STREAK_MILESTONES = {
     3:  "🥉 3 дня подряд",
@@ -203,23 +204,21 @@ BTN_SUB      = "⭐ Premium"
 BTN_REF      = "🎁 Бонусы"
 BTN_PROFILE  = "⚙️ Профиль"
 BTN_ADMIN    = "🛠 Админка"
-BTN_WATER    = "💧 Вода"
-BTN_PLAN     = "🍽 План питания"
 
 MENU_BUTTONS = {
     BTN_PHOTO, BTN_MANUAL, BTN_PROGRESS,
     BTN_SUB, BTN_REF, BTN_PROFILE, BTN_ADMIN,
-    BTN_WATER, BTN_PLAN,
 }
 
 
 def main_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
-        [KeyboardButton(text=BTN_PHOTO),   KeyboardButton(text=BTN_MANUAL)],
+        [KeyboardButton(text=BTN_PHOTO),    KeyboardButton(text=BTN_MANUAL)],
         [KeyboardButton(text=BTN_PROGRESS), KeyboardButton(text=BTN_PROFILE)],
-        [KeyboardButton(text=BTN_WATER),   KeyboardButton(text=BTN_PLAN)],
-        [KeyboardButton(text=BTN_SUB),     KeyboardButton(text=BTN_REF)],
+        [KeyboardButton(text=BTN_SUB),      KeyboardButton(text=BTN_REF)],
     ]
+    if is_admin:
+        rows.append([KeyboardButton(text=BTN_ADMIN)])
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -594,9 +593,10 @@ def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
 def profile_keyboard(uid: int, has_goal: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Пересчитать норму", callback_data="recalc_norm")],
-        [InlineKeyboardButton(text="⚖️ Записать вес", callback_data="weight_opt")],
-        [InlineKeyboardButton(text="📈 Неделя", callback_data="profile_week")],
-        [InlineKeyboardButton(text="ℹ️ Статус подписки", callback_data="profile_status")],
+        [InlineKeyboardButton(text="⚖️ Записать вес",      callback_data="weight_opt")],
+        [InlineKeyboardButton(text="📈 Неделя",            callback_data="profile_week")],
+        [InlineKeyboardButton(text="🍽 План питания",      callback_data="show_meal_plan")],
+        [InlineKeyboardButton(text="ℹ️ Статус подписки",  callback_data="profile_status")],
     ])
 
 
@@ -762,10 +762,16 @@ async def _deliver_analysis(
             log.debug(f"ai advice error: {adv_e}")
 
 
+    if streak > 0 and not milestone:
+        # Small reinforcement on streak update (not milestone days)
+        if streak in (3, 7, 14, 21, 30, 60, 90):
+            pass  # handled by milestone below
+        elif streak > 1:
+            await message.answer(f"🔥 Серия: *{streak} дней*", parse_mode="Markdown")
+
     if milestone and streak in STREAK_MILESTONES:
         await message.answer(
-            f"🎉 *Ачивка разблокирована!*\n"
-            f"_{STREAK_MILESTONES[streak]}_\n\nПродолжай! 💪",
+            f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
             parse_mode="Markdown",
         )
 
@@ -778,19 +784,27 @@ async def send_morning_checkins(bot: Bot):
     for user in users:
         uid = user["telegram_id"]
         goal = user.get("daily_goal")
+        goal_protein = user.get("protein_goal")
         streak = user.get("streak_days", 0)
-        name = user.get("first_name") or "Привет"
+        name = (user.get("first_name") or "").split()[0] or "Привет"
         try:
-            goal_line = f"🎯 Цель: *{goal} ккал*" if goal else "🎯 Цель не задана — настрой в профиле"
+            goal_block = ""
+            if goal:
+                goal_block = f"Цель сегодня: *{goal} ккал*"
+                if goal_protein:
+                    goal_block += f" · *{goal_protein}г белка*"
+            else:
+                goal_block = "Цель не задана — настрой в профиле"
             streak_line = (
-                f"\n{streak_emoji(streak)} Серия *{streak} дней* — не прерывай!"
+                f"\n{streak_emoji(streak)} Серия *{streak} {'день' if streak == 1 else 'дня' if 2 <= streak <= 4 else 'дней'}* — держи темп."
                 if streak > 1 else ""
             )
             await bot.send_message(
                 uid,
-                f"☀️ *Доброе утро, {name}!*\n\n"
-                f"{goal_line}{streak_line}\n\n"
-                f"📸 Начни день — сфотографируй завтрак!",
+                f"☀️ *Доброе утро, {name}*\n\n"
+                f"{goal_block}"
+                f"{streak_line}\n\n"
+                f"Начни с завтрака — отправь фото 📸",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -833,14 +847,19 @@ async def send_evening_summaries(bot: Bot):
             )
             protein_line = f"\n🥩 Белок: *{macros['protein']}г*" if macros["protein"] > 0 else ""
 
+            # Build compact evening summary
+            kcal_line = f"🍽 *{total}* ккал" + (f" / {goal}" if goal else "")
+            prot_line  = f"\n🥩 Белок: *{macros['protein']}г*" + (f" / {goal_protein}г" if goal_protein else "") if macros["protein"] > 0 else ""
+            s_line     = f"\n🔥 Серия: *{streak} {'день' if streak==1 else 'дня' if 2<=streak<=4 else 'дней'}*" if streak > 0 else ""
+            score_note = f"\n\n{comment}" if comment else ""
             await bot.send_message(
                 uid,
-                f"🌙 *Итоги дня*\n\n"
-                f"*{total}{f' / {goal}' if goal else ''} ккал*\n"
-                f"{result_line}{protein_line}"
-                f"{streak_line}\n\n"
-                f"🍽 Balance Score: *{fs}/10*\n"
-                f"💬 _{comment}_",
+                f"📊 *Итоги дня*\n\n"
+                f"{kcal_line}"
+                f"{prot_line}"
+                f"{s_line}"
+                f"\n🎯 Balance Score: *{fs}/10*"
+                f"{score_note}",
                 parse_mode="Markdown",
             )
         except Exception as e:
@@ -1639,6 +1658,68 @@ async def main():
             parse_mode="Markdown",
         )
 
+    @dp.callback_query(F.data == "show_meal_plan")
+    async def cb_show_meal_plan(callback: CallbackQuery):
+        uid = callback.from_user.id
+        user = get_user(uid)
+        await callback.answer()
+        if not user:
+            return
+        if user.get("status") != "paid" or check_subscription_expired(user):
+            await callback.message.answer(
+                "🍽 *AI-план питания* — Premium функция\n\nОформи подписку, чтобы получать персональный план питания на день.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⭐ Открыть Premium", callback_data="show_premium")],
+                ]),
+            )
+            return
+        if not user.get("daily_goal"):
+            await callback.message.answer(
+                "⚙️ Сначала настрой профиль — нажми *Пересчитать норму*.",
+                parse_mode="Markdown",
+            )
+            return
+        thinking_msg = await callback.message.answer("🤔 *Составляю план питания...*", parse_mode="Markdown")
+        try:
+            goal_kcal = user.get("daily_goal", 2000)
+            protein_g = user.get("protein_goal", 150)
+            goal_type = user.get("goal_type", "maintain")
+            gender = user.get("gender", "male")
+            goal_labels = {"lose": "похудение", "maintain": "поддержание", "gain": "набор массы"}
+            plan_prompt = (
+                f"Составь персональный план питания на один день.\n"
+                f"Параметры: цель={goal_labels.get(goal_type,'поддержание')}, "
+                f"норма={goal_kcal} ккал, белок={protein_g}г, пол={'мужской' if gender=='male' else 'женский'}.\n"
+                f"Формат: 4 приёма пищи (завтрак, обед, перекус, ужин).\n"
+                f"Для каждого: название + калории + КБЖУ (Б/Ж/У в граммах). "
+                f"В конце итого. Кратко, конкретно. Только реальные блюда."
+            )
+            resp = await openai_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {"role": "system", "content": "Профессиональный нутрициолог. Практичные планы питания."},
+                    {"role": "user", "content": plan_prompt},
+                ],
+                max_tokens=700,
+            )
+            plan_text = resp.choices[0].message.content or ""
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
+            await callback.message.answer(
+                f"🍽 *Твой план питания на сегодня*\n\n{plan_text}",
+                parse_mode="Markdown",
+            )
+        except Exception as plan_e:
+            log.error(f"meal plan error: {plan_e}")
+            try:
+                await thinking_msg.delete()
+            except Exception:
+                pass
+            await callback.message.answer("Ошибка при составлении плана. Попробуй позже.")
+
     @dp.callback_query(F.data == "profile_week")
     async def cb_profile_week(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -2111,6 +2192,14 @@ async def main():
             await deny(message, reason)
             return
 
+        # Rate limit: prevent spam scanning
+        now = _utcnow()
+        last = _last_scan.get(uid)
+        if last and (now - last).total_seconds() < SCAN_COOLDOWN_SEC:
+            await message.answer("Подожди пару секунд перед следующим сканированием.")
+            return
+        _last_scan[uid] = now
+
         if user["status"] == "beta":
             used = get_daily_usage(uid)
             if used >= BETA_DAILY_LIMIT:
@@ -2155,530 +2244,6 @@ async def main():
         await _show_premium_screen(callback.message.answer, uid, user)
 
     # ── water tracker callbacks ─────────────────────────────────────────────────
-    @dp.callback_query(F.data == "water_add")
-    async def cb_water_add(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer()
-        glasses = add_water_log(uid)
-        filled = min(glasses, WATER_GOAL)
-        bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
-        pct = round(glasses / WATER_GOAL * 100)
-        status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
-        try:
-            await callback.message.edit_text(
-                f"💧 *Вода сегодня*\n\n"
-                f"{bar}\n"
-                f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
-                f"{status}",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                    [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
-                ]),
-            )
-        except Exception:
-            pass
-
-    @dp.callback_query(F.data == "water_reset")
-    async def cb_water_reset(callback: CallbackQuery):
-        uid = callback.from_user.id
-        await callback.answer("Сброшено")
-        reset_water_today(uid)
-        try:
-            await callback.message.edit_text(
-                f"💧 *Вода сегодня*\n\n{'⬜' * WATER_GOAL}\n*0 / {WATER_GOAL} стаканов*",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                ]),
-            )
-        except Exception:
-            pass
-
-
-    @dp.pre_checkout_query()
-    async def pre_checkout(query: PreCheckoutQuery):
-        await query.answer(ok=True)
-
-    @dp.message(F.successful_payment)
-    async def payment_done(message: Message):
-        uid = message.from_user.id
-        payload = message.successful_payment.invoice_payload
-        # payload format: sub_Xd_UID
-        try:
-            days = int(payload.split("_")[1].rstrip("d"))
-        except Exception:
-            days = SUB_DAYS
-        activate_subscription(uid, days)
-        exp = (_utcnow() + timedelta(days=days)).strftime("%d.%m.%Y")
-        plan_label = {30: "1 месяц", 90: "3 месяца", 365: "12 месяцев"}.get(days, f"{days} дней")
-        await message.answer(
-            f"🎉 *Оплата прошла! Добро пожаловать в Premium!*\n\n"
-            f"📅 Подписка *{plan_label}* — до *{exp}*\n"
-            f"📸 Безлимитные анализы разблокированы\n"
-            f"🍽 AI-план питания доступен\n"
-            f"Отправляй фото еды — я всегда рядом 🚀",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard(uid == ADMIN_ID),
-        )
-        referrer_id = mark_referral_paid(uid)
-        if referrer_id:
-            activate_subscription(referrer_id, REFERRAL_BONUS_DAYS)
-            try:
-                ref_user = get_user(referrer_id)
-                new_exp = (
-                    datetime.fromisoformat(ref_user["expires_at"]).strftime("%d.%m.%Y")
-                    if ref_user and ref_user.get("expires_at") else "—"
-                )
-                await bot.send_message(
-                    referrer_id,
-                    f"🎁 Твой реферал оплатил! *+{REFERRAL_BONUS_DAYS} дней* → до *{new_exp}*",
-                    parse_mode="Markdown",
-                )
-            except Exception as e:
-                log.warning(f"referral notify: {e}")
-        user = get_user(uid)
-        await notify_admin(bot, f"💰 Оплата: {user_label(user)} · {plan_label} → до {exp}")
-
-    # ── Menu text handlers ─────────────────────────────────────────────────────
-    @dp.message(F.text.in_(MENU_BUTTONS))
-    async def handle_menu(message: Message):
-        uid = message.from_user.id
-        text = message.text
-        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
-
-        if text == BTN_ADMIN:
-            if uid != ADMIN_ID:
-                return
-            await show_admin_panel(message.answer)
-            return
-
-        user = get_user(uid)
-
-        if text == BTN_PHOTO:
-            ok, reason = access_check(user)
-            if not ok:
-                await deny(message, reason)
-                return
-            await message.answer(
-                "📸 *Отправь фото еды*\n\n"
-                "_Держи телефон в 10–15 см от блюда для точного результата_",
-                parse_mode="Markdown",
-            )
-            return
-
-        if text == BTN_MANUAL:
-            ok, reason = access_check(user)
-            if not ok:
-                await deny(message, reason)
-                return
-            _set_state(uid, STATES["MANUAL_ENTRY"])
-            await message.answer(
-                "✍️ *Что добавить в дневник?*\n\n"
-                "📝 Опиши блюдо: «борщ 300г», «яблоко», «куриная грудка 150г»\n"
-                "🔢 Или просто введи калории: «450»\n\n"
-                "_/cancel — отмена_",
-                parse_mode="Markdown",
-            )
-            return
-
-        if text == BTN_PROGRESS:
-            ok, reason = access_check(user)
-            if not ok:
-                await deny(message, reason)
-                return
-            macros = get_daily_macros(uid)
-            total = macros["kcal"]
-            meals = get_daily_usage(uid)
-            goal = user["daily_goal"]
-            goal_protein = user.get("protein_goal")
-            streak = user.get("streak_days", 0)
-            score = calc_daily_score(total, macros["protein"], macros["fat"],
-                                     macros["carbs"], goal, goal_protein, meals)
-            fs = format_score(score)
-
-            streak_line = (
-                f"\n🔥 Серия: *{streak} {'день' if streak == 1 else 'дней'}*"
-                if streak > 0 else ""
-            )
-            macros_line = (
-                f"\n🥩 Б: *{macros['protein']}г*  Ж: *{macros['fat']}г*  У: *{macros['carbs']}г*"
-                if macros["protein"] > 0 else ""
-            )
-            comment = ai_score_comment(score, macros["protein"], macros["carbs"],
-                                       total, goal, None) if total > 0 else ""
-            score_line = f"\n🍽 Balance Score: *{fs}/10*" if total > 0 else ""
-            comment_line = f"\n💬 _{comment}_" if comment else ""
-
-            if goal:
-                remaining = max(goal - total, 0)
-                over = total - goal
-                if over > 0:
-                    status = f"⚡ +{over} ккал сверх нормы"
-                else:
-                    pct = round(total / goal * 100)
-                    status = f"Выполнено {pct}% — ещё {remaining} ккал"
-                text_out = (
-                    f"📊 *Мой прогресс*\n\n"
-                    f"*{total} / {goal} ккал*\n"
-                    f"{status}\n"
-                    f"Приёмов: {meals}{macros_line}"
-                    f"{streak_line}"
-                    f"{score_line}{comment_line}"
-                )
-            else:
-                text_out = (
-                    f"📊 *Мой прогресс*\n\n"
-                    f"*{total} ккал* сегодня\n"
-                    f"Приёмов: {meals}{macros_line}"
-                    f"{streak_line}"
-                    f"{score_line}{comment_line}"
-                    f"\n\n_💡 Установи цель в ⚙️ Профиль_"
-                )
-            await message.answer(text_out, parse_mode="Markdown",
-                                  reply_markup=progress_inline_keyboard())
-            return
-
-        if text == BTN_PROFILE:
-            ok, reason = access_check(user)
-            if ok or reason in ("trial_expired", "sub_expired"):
-                has_goal = bool(user and user.get("daily_goal"))
-                name = (user.get("first_name") or "").split()[0] if user else ""
-                streak = user.get("streak_days", 0) if user else 0
-                best = user.get("best_streak", 0) if user else 0
-                goal_line = (
-                    f"🎯 Норма: *{user['daily_goal']} ккал*"
-                    + (f"  💪 Белок: *{user['protein_goal']}г*" if user.get("protein_goal") else "")
-                    if user and user.get("daily_goal") else
-                    "🎯 Норма не задана"
-                )
-                weight_line = f"⚖️ Вес: *{user['weight_kg']} кг*" if user and user.get("weight_kg") else "⚖️ Вес не указан"
-                streak_line = f"🔥 Серия: *{streak} дн.*  |  Рекорд: *{best} дн.*" if streak or best else ""
-
-                await message.answer(
-                    f"⚙️ *Профиль*\n\n"
-                    f"{goal_line}\n"
-                    f"{weight_line}\n"
-                    f"{streak_line}",
-                    parse_mode="Markdown",
-                    reply_markup=profile_keyboard(uid, has_goal),
-                )
-            else:
-                await deny(message, reason)
-            return
-
-        if text == BTN_WATER:
-            glasses = get_water_today(uid)
-            filled = min(glasses, WATER_GOAL)
-            bar = "💧" * filled + "⬜" * max(0, WATER_GOAL - filled)
-            pct = round(glasses / WATER_GOAL * 100) if WATER_GOAL else 0
-            status = "✅ Норма выполнена!" if glasses >= WATER_GOAL else f"Осталось: {WATER_GOAL - glasses} ст."
-            await message.answer(
-                f"💧 *Вода сегодня*\n\n"
-                f"{bar}\n"
-                f"*{glasses} / {WATER_GOAL} стаканов* — {pct}%\n"
-                f"{status}",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="+ Стакан воды", callback_data="water_add")],
-                    [InlineKeyboardButton(text="🔄 Сбросить", callback_data="water_reset")],
-                ]),
-            )
-            return
-
-        if text == BTN_PLAN:
-            ok, reason = access_check(user)
-            if not ok:
-                await deny(message, reason)
-                return
-            if user.get("status") != "paid" or check_subscription_expired(user):
-                await message.answer(
-                    "🍽 *AI-план питания* — Premium функция\n\nПолучи персональный план питания на день на основе твоих целей и нормы КБЖУ 🎯",
-
-
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="⭐ Открыть Premium", callback_data="show_premium")],
-                    ]),
-                )
-                return
-            if not user.get("daily_goal"):
-                await message.answer(
-                    "⚙️ Сначала настрой профиль — нажми *Профиль* → *Пересчитать норму*.",
-                    parse_mode="Markdown",
-                )
-                return
-            thinking_msg = await message.answer("🤔 *Составляю план питания...*", parse_mode="Markdown")
-            try:
-                goal_kcal = user.get("daily_goal", 2000)
-                protein_g = user.get("protein_goal", 150)
-                goal_type = user.get("goal_type", "maintain")
-                gender = user.get("gender", "male")
-                goal_labels = {"lose": "похудение", "maintain": "поддержание", "gain": "набор массы"}
-                plan_prompt = (
-                    f"Составь персональный план питания на один день.\n"
-                    f"Параметры: цель={goal_labels.get(goal_type,'поддержание')}, "
-                    f"норма={goal_kcal} ккал, белок={protein_g}г, пол={'мужской' if gender=='male' else 'женский'}.\n"
-                    f"Формат: 4 приёма пищи (завтрак, обед, перекус, ужин).\n"
-                    f"Для каждого: название + калории + КБЖУ (Б/Ж/У в граммах). "
-                    f"В конце итого. Кратко, конкретно. Только реальные блюда, без экзотики."
-                )
-                resp = await openai_client.chat.completions.create(
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
-                    messages=[
-                        {"role": "system", "content": "Профессиональный нутрициолог. Составляй практичные планы питания."},
-                        {"role": "user", "content": plan_prompt},
-                    ],
-                    max_tokens=700,
-                )
-                plan_text = resp.choices[0].message.content or ""
-                try:
-                    await thinking_msg.delete()
-                except Exception:
-                    pass
-                await message.answer(
-                    f"🍽 *Твой план питания на сегодня*\n\n{plan_text}",
-                    parse_mode="Markdown",
-                )
-            except Exception as plan_e:
-                log.error(f"meal plan error: {plan_e}")
-                try:
-                    await thinking_msg.delete()
-                except Exception:
-                    pass
-                await message.answer("⚠️ Не удалось составить план. Попробуй чуть позже.")
-            return
-
-
-        if text == BTN_SUB:
-            await _show_premium_screen(message.answer, uid, user)
-            return
-
-        if text == BTN_REF:
-            if not user or user.get("status") == "blocked":
-                await message.answer("⛔ Доступ заблокирован.")
-                return
-            await _show_referral(message.answer, uid)
-            return
-
-    async def _show_premium_screen(send_fn, uid: int, user):
-        status = user["status"] if user else "pending"
-        is_premium = status == "paid" and not check_subscription_expired(user)  # pass dict
-
-        if is_premium:
-            exp_dt = datetime.fromisoformat(user["expires_at"])
-            exp = exp_dt.strftime("%d.%m.%Y")
-            dl = max((exp_dt - _utcnow()).days, 0)
-            await send_fn(
-                f"💎 *Подписка активна*\n\n"
-                f"Действует до *{exp}* — осталось *{dl} дн.*\n\n"
-                f"━━━━━━━━━━━━━━━━\n"
-                f"*Продлить заранее?*\n"
-                f"Дни добавятся к текущей подписке:\n"
-                f"• 1 мес — 150 ⭐ (~7 ₽/день)\n"
-                f"• 3 мес — 360 ⭐ (~6 ₽/день)\n"
-                f"• 12 мес — 990 ⭐ (~4 ₽/день)",
-                parse_mode="Markdown",
-                reply_markup=premium_keyboard(),
-            )
-            return
-
-        await send_fn(
-            "*Premium подписка*\n\n"
-            "━━━━━━━━━━━━━━━━\n"
-            "*Бесплатно*\n"
-            "• 5 анализов в день\n"
-            "• Базовое КБЖУ\n"
-            "• Дневной трекер\n\n"
-            "*Premium — 150 ⭐ / месяц*\n"
-            "• Безлимитные анализы\n"
-            "• AI-комментарий тренера\n"
-            "• Утро/вечер итоги дня\n"
-            "• Недельные отчёты\n"
-            "• Трекер веса\n"
-            "• Стрики и ачивки\n"
-            "• Balance Score дня\n"
-            "• AI-план питания на день\n"
-            "• Трекер воды\n"
-            "━━━━━━━━━━━━━━━━\n\n"
-            "Тарифы:\n"
-            "• 1 мес — 150 ⭐ (~7 ₽/день)\n"
-            "• 3 мес — 360 ⭐ (~6 ₽/день)\n"
-            "• 12 мес — 990 ⭐ (~4 ₽/день)",
-            parse_mode="Markdown",
-            reply_markup=premium_keyboard(),
-        )
-
-    async def _show_referral(send_fn, uid: int):
-        stats = get_referral_stats(uid)
-        link = ref_link(uid)
-        share_text = "Считаю калории по фото 📸 Попробуй бесплатно:"
-        share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(share_text)}"
-
-        earned_days = stats["total"] * REFERRAL_JOIN_BONUS_DAYS + stats["paid"] * REFERRAL_BONUS_DAYS
-
-        await send_fn(
-            f"👥 *Приглашай друзей — получай дни бесплатно!*\n\n"
-            f"🎁 За регистрацию друга: *+{REFERRAL_JOIN_BONUS_DAYS} дня*\n"
-            f"💰 За его оплату подписки: *+{REFERRAL_BONUS_DAYS} дней*\n\n"
-            f"━━━━━━━━━━━━━━━━\n"
-            f"📊 Приглашено: *{stats['total']}*\n"
-            f"💎 Оплатили: *{stats['paid']}*\n"
-            f"🎁 Заработано: *≈{earned_days} дней*\n"
-            f"━━━━━━━━━━━━━━━━\n\n"
-            f"🔗 Твоя ссылка:\n`{link}`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📤 Поделиться с другом", url=share_url)],
-            ]),
-        )
-
-    # ── FSM text input handler ─────────────────────────────────────────────────
-    @dp.message(F.text)
-    async def handle_text(message: Message):
-        uid = message.from_user.id
-        text = message.text.strip()
-
-        # Global cancel
-        if text.lower() in ("/cancel", "отмена", "cancel"):
-            user_states.pop(uid, None)
-            await message.answer("✅ Отменено.", reply_markup=main_keyboard(uid == ADMIN_ID))
-            return
-
-        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
-        user = get_user(uid)
-
-        # If the user is still in onboarding and the bot was restarted (state lost),
-        # try to restore their progress from the persistent DB store
-        if not user.get("onboarded"):
-            _try_restore_onboard(uid)
-
-        state_data = user_states.get(uid, {})
-        state = state_data.get("state")
-
-      # ── Onboarding: age ────────────────────────────────────────────────────────
-        if state == "ob_age":
-            try:
-                age = int(text.strip())
-                if not (10 <= age <= 100):
-                    raise ValueError
-            except ValueError:
-                await message.answer(
-                    "⚠️ Введи возраст числом от 10 до 100 или /cancel:"
-                )
-                return
-            ob_data = user_states.get(uid, {}).get("data", {})
-            ob_data["age"] = age
-            await message.answer(
-                "📏 *Какой у тебя рост?*\n\n_Введи в сантиметрах (например: 175)_",
-                parse_mode="Markdown",
-            )
-            _set_onboard_state(uid, "ob_height", ob_data)
-            return
-
-        # ── Onboarding: height ─────────────────────────────────────────────────────
-        if state == "ob_height":
-            try:
-                height = float(text.replace(",", "."))
-                if not (100 <= height <= 250):
-                    raise ValueError
-            except ValueError:
-                await message.answer(
-                    "⚠️ Введи рост в сантиметрах от 100 до 250 или /cancel:"
-                )
-                return
-            ob_data = user_states.get(uid, {}).get("data", {})
-            ob_data["height"] = height
-            await message.answer(
-                "⚖️ *Какой у тебя вес?*\n\n_Введи в кг (например: 70 или 70.5)_",
-                parse_mode="Markdown",
-            )
-            _set_onboard_state(uid, "ob_weight", ob_data)
-            return
-
-        # ── Onboarding: weight -> calculate and complete ───────────────────────────
-        if state == "ob_weight":
-            try:
-                weight = float(text.replace(",", "."))
-                if not (30 <= weight <= 300):
-                    raise ValueError
-            except ValueError:
-                await message.answer(
-                    "⚠️ Введи вес в кг от 30 до 300 или /cancel:"
-                )
-                return
-            ob_data = user_states.get(uid, {}).get("data", {})
-            ob_data["weight"] = weight
-            _set_onboard_state(uid, "ob_activity", ob_data)
-            activity_kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="🛋 Сидячий (офис, мало движения)",    callback_data="ob_activity:sedentary")],
-                [InlineKeyboardButton(text="🚶 Лёгкая (прогулки, 1-3 трен/нед)", callback_data="ob_activity:light")],
-                [InlineKeyboardButton(text="🏃 Средняя (3-5 трен/нед)",           callback_data="ob_activity:moderate")],
-                [InlineKeyboardButton(text="💪 Высокая (6-7 трен/нед)",           callback_data="ob_activity:active")],
-                [InlineKeyboardButton(text="🔥 Очень высокая (физ. труд + трен)", callback_data="ob_activity:very_active")],
-            ])
-            await message.answer(
-                "⚡️ *Какой у тебя уровень активности?*",
-                parse_mode="Markdown",
-                reply_markup=activity_kb,
-            )
-            return
-            ob_data = user_states.get(uid, {}).get("data", {})
-            goal_kcal, protein_goal = _calc_calorie_goal(
-                ob_data.get("gender", "male"),
-                ob_data.get("age", 25),
-                ob_data.get("height", 170),
-                weight,
-                ob_data.get("goal_type", "maintain"),
-            )
-            set_user_goals(
-                uid,
-                daily_goal=goal_kcal,
-                protein_goal=protein_goal,
-                weight_kg=weight,
-                height_cm=ob_data.get("height", 170),
-                age=ob_data.get("age", 25),
-                gender=ob_data.get("gender", "male"),
-                goal_type=ob_data.get("goal_type", "maintain"),
-            )
-            mark_onboarded(uid)
-            try:
-                clear_onboard_state(uid)
-            except Exception:
-                pass
-            user_states.pop(uid, None)
-            goal_labels = {
-                "lose":     "похудение",
-                "maintain": "поддержание веса",
-                "gain":     "набор массы",
-            }
-            goal_label = goal_labels.get(ob_data.get("goal_type", "maintain"), "поддержание веса")
-            await message.answer(
-                f"🎉 *Профиль настроен!*\n\n"
-                f"🎯 Цель: *{goal_label}*\n"
-                f"🔥 Норма калорий: *{goal_kcal} ккал/день*\n"
-                f"🥩 Норма белка: *{protein_goal} г/день*\n\n"
-                f"Отправляй фото еды или описывай что съел — "
-                f"буду следить за прогрессом! 📸",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard(uid == ADMIN_ID),
-            )
-            return
-
-          # ── Admin broadcast state ──────────────────────────────────────────────
-        if state == STATES["ADMIN_BROADCAST"] and uid == ADMIN_ID:
-              s_data = _get_state(uid).get("data", {})
-              segment = s_data.get("segment", "all_active")
-              segment_label = s_data.get("segment_label", "Все активные")
-              users = get_users_by_segment(segment)
-              sent = failed = 0
-              for u in users:
-                  try:
-                      await bot.send_message(u["telegram_id"], text)
-                      sent += 1
-                  except Exception:
-                      failed += 1
-                  await asyncio.sleep(0.05)
               user_states.pop(uid, None)
               await message.answer(
                   f"📡 *Рассылка завершена*\n"
