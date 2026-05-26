@@ -146,57 +146,57 @@ async def _deliver_analysis(
 
     user_states.pop(uid, None)
 
-      # Optional action buttons
-      is_premium = user.get("status") == "paid" and not check_subscription_expired(user)
-      action_btns = []
-      if is_premium:
-          action_btns.append(InlineKeyboardButton(text="💡 Совет", callback_data="scan_advice"))
-      if kcal and food_name:
-          action_btns.append(InlineKeyboardButton(text="📤 Поделиться", callback_data="scan_share"))
+    # Optional action buttons
+    is_premium = user.get("status") == "paid" and not check_subscription_expired(user)
+    action_btns = []
+    if is_premium:
+        action_btns.append(InlineKeyboardButton(text="💡 Совет", callback_data="scan_advice"))
+    if kcal and food_name:
+        action_btns.append(InlineKeyboardButton(text="📤 Поделиться", callback_data="scan_share"))
 
-      if action_btns:
-          _last_food_ctx[uid] = {
-              "food_name": food_name, "kcal": kcal,
-              "protein": protein, "fat": fat, "carbs": carbs,
-              "user": user,
-          }
-          result_markup = InlineKeyboardMarkup(inline_keyboard=[action_btns])
-      else:
-          result_markup = main_keyboard(uid == ADMIN_ID)
+    if action_btns:
+        _last_food_ctx[uid] = {
+            "food_name": food_name, "kcal": kcal,
+            "protein": protein, "fat": fat, "carbs": carbs,
+            "user": user,
+        }
+        result_markup = InlineKeyboardMarkup(inline_keyboard=[action_btns])
+    else:
+        result_markup = main_keyboard(uid == ADMIN_ID)
 
-      await message.answer(
-          display + progress + hint,
-          parse_mode="Markdown",
-          reply_markup=result_markup,
-      )
+    await message.answer(
+        display + progress + hint,
+        parse_mode="Markdown",
+        reply_markup=result_markup,
+    )
 
-      if food_name:
-          fun = detect_fun_reaction(food_name.lower(), kcal)
-          if fun:
-              await message.answer(fun)
+    if food_name:
+        fun = detect_fun_reaction(food_name.lower(), kcal)
+        if fun:
+            await message.answer(fun)
 
-      # Streak milestone message
-      if milestone and streak in STREAK_MILESTONES:
-          await message.answer(
-              f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
-              parse_mode="Markdown",
-          )
+    # Streak milestone message
+    if milestone and streak in STREAK_MILESTONES:
+        await message.answer(
+            f"🎉 *{STREAK_MILESTONES[streak]}*\n\nСерия {streak} дней — это уже характер.",
+            parse_mode="Markdown",
+        )
 
-      # Scan count milestones
-      total_scans = get_user_scan_count(uid)
-      if total_scans in (10, 25, 50, 100):
-          await message.answer(
-              f"📸 *Уже {total_scans} анализов еды!*\n\nОтличная привычка — продолжай! 🔥",
-              parse_mode="Markdown",
-          )
+    # Scan count milestones
+    total_scans = get_user_scan_count(uid)
+    if total_scans in (10, 25, 50, 100):
+        await message.answer(
+            f"📸 *Уже {total_scans} анализов еды!*\n\nОтличная привычка — продолжай! 🔥",
+            parse_mode="Markdown",
+        )
 
-      # New daily protein record
-      if protein and protein > 0 and macros["protein"] > prev_protein_best and macros["protein"] >= 80:
-          await message.answer(
-              f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
-              f"Лучший результат — так держать! 💪",
-              parse_mode="Markdown",
-          )
+    # New daily protein record
+    if protein and protein > 0 and macros["protein"] > prev_protein_best and macros["protein"] >= 80:
+        await message.answer(
+            f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
+            f"Лучший результат — так держать! 💪",
+            parse_mode="Markdown",
+        )
 
 
 
