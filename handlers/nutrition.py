@@ -223,27 +223,28 @@ async def _deliver_analysis(
     # Share button
     if kcal and food_name:
         import urllib.parse as _urlp
-        from config import BOT_USERNAME
+        from config import BOT_USERNAME, REFERRAL_JOIN_BONUS_DAYS
         macros_parts = []
         if protein: macros_parts.append(f"Б {round(protein)}г")
         if fat:     macros_parts.append(f"Ж {round(fat)}г")
         if carbs:   macros_parts.append(f"У {round(carbs)}г")
         macros_line = " · ".join(macros_parts)
+        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{uid}" if BOT_USERNAME else ""
         share_text = (
             f"🍽 {food_name} — {kcal} ккал\n"
             + (f"{macros_line}\n\n" if macros_line else "\n")
             + f"Считаю КБЖУ с AI за секунды 📸"
         )
-        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else ""
-        if bot_link:
-            share_url = f"https://t.me/share/url?url={_urlp.quote(bot_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+        if ref_link:
+            share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
         else:
             share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
         await message.answer(
-            "📤 _Поделись результатом с друзьями_",
+            f"📤 *Поделись с другом — получи +{REFERRAL_JOIN_BONUS_DAYS} дней!*\n\n"
+            f"_Друг перейдёт по твоей ссылке → тебе начислятся бонусные дни_",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="📤 Поделиться", url=share_url),
+                InlineKeyboardButton(text="📤 Поделиться и получить бонус", url=share_url),
             ]]),
         )
 
