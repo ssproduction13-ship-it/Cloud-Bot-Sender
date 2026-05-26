@@ -66,9 +66,9 @@ def _fmt_user_card(u: dict) -> str:
     return "\n".join(lines)
 
 
-async def show_admin_panel(send_fn):
-    s    = get_total_stats()
-    text = (
+def _build_admin_stats_text() -> str:
+    s = get_total_stats()
+    return (
         f"🛡 *Admin Panel*\n\n"
         f"👥 Всего: *{s['total_users']}*  "
         f"(⏳{s['pending']} ✅{s['beta']} 💎{s['paid']} 🚫{s['blocked']})\n"
@@ -84,6 +84,14 @@ async def show_admin_panel(send_fn):
         f"`/block ID` — заблокировать\n"
         f"`/stats` — статистика  `/users` — список"
     )
+
+
+async def show_admin_panel(send_fn):
+    try:
+        text = _build_admin_stats_text()
+    except Exception as e:
+        log.error(f"admin panel stats error: {e}")
+        text = "🛡 *Admin Panel*\n\n⚠️ Ошибка загрузки статистики.\n\nПопробуй /stats"
     await send_fn(text, parse_mode="Markdown", reply_markup=admin_panel_keyboard())
 
 
@@ -383,20 +391,19 @@ async def cb_admin_panel(callback: CallbackQuery):
     data = callback.data
 
     if data in ("adm_stats", "adm_refresh"):
-        s    = get_total_stats()
-        text = (
-            f"🛡 *Admin Panel*\n\n"
-            f"👥 Всего: *{s['total_users']}*  "
-            f"(⏳{s['pending']} ✅{s['beta']} 💎{s['paid']} 🚫{s['blocked']})\n"
-            f"🆕 Новых сегодня: *{s['new_today']}*\n"
-            f"📸 Анализов сегодня: *{s['analyses_today']}*  |  всего: {s['analyses_total']}\n"
-            f"👁 DAU: *{s['dau']}*  |  WAU: *{s['wau']}*\n"
-            f"📈 D1: *{s['d1_retention']}%*  |  D7: *{s['d7_retention']}%*\n"
-            f"🔥 Средний стрик: *{s['avg_streak']} дн.*\n"
-            f"🔗 Реф. оплат: *{s['referrals_paid']}*"
-        )
-        await callback.message.edit_text(text, parse_mode="Markdown",
-                                         reply_markup=admin_panel_keyboard())
+        try:
+            text = _build_admin_stats_text()
+        except Exception as e:
+            log.error(f"admin refresh error: {e}")
+            text = "🛡 *Admin Panel*\n\n⚠️ Ошибка загрузки статистики."
+        try:
+            await callback.message.edit_text(
+                text, parse_mode="Markdown", reply_markup=admin_panel_keyboard()
+            )
+        except Exception:
+            await callback.message.answer(
+                text, parse_mode="Markdown", reply_markup=admin_panel_keyboard()
+            )
         return
 
     if data == "adm_broadcast":
@@ -404,10 +411,10 @@ async def cb_admin_panel(callback: CallbackQuery):
             "📡 *Сегментированная рассылка*\n\nВыбери аудиторию:",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="👥 Все активные",      callback_data="bcast:all_active")],
-                [InlineKeyboardButton(text="🎁 Триал-пользователи", callback_data="bcast:trial_active")],
-                [InlineKeyboardButton(text="💎 Платные подписки",  callback_data="bcast:paid_active")],
-                [InlineKeyboardButton(text="⏰ Подписка истекла",   callback_data="bcast:sub_expired")],
+                [InlineKeyboardButton(text="👥 Все активные",        callback_data="bcast:all_active")],
+                [InlineKeyboardButton(text="🎁 Триал-пользователи",  callback_data="bcast:trial_active")],
+                [InlineKeyboardButton(text="💎 Платные подписки",    callback_data="bcast:paid_active")],
+                [InlineKeyboardButton(text="⏰ Подписка истекла",    callback_data="bcast:sub_expired")],
                 [InlineKeyboardButton(text="😴 Не логируют 7+ дней", callback_data="bcast:no_log_week")],
             ]),
         )
