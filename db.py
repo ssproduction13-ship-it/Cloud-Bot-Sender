@@ -876,3 +876,42 @@ def get_users_by_segment(segment: str) -> list:
             else:
                 cur.execute("SELECT * FROM users WHERE status IN ('beta','paid')")
             return [dict(r) for r in cur.fetchall()]
+
+
+# ── P6: Scan count & protein record helpers ────────────────────────────────────
+
+def get_user_scan_count(telegram_id: int) -> int:
+    """Total number of food analyses ever logged for a user."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM usage WHERE telegram_id=%s", (telegram_id,))
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
+def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
+    """Best single-day protein total *before* today (for new-record detection)."""
+    today = _utcnow().strftime("%Y-%m-%d")
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(MAX(daily_p), 0) FROM (
+                        SELECT SUM(protein_g) AS daily_p
+                        FROM usage
+                        WHERE telegram_id=%s
+                          AND protein_g IS NOT NULL
+                          AND date < %s
+                        GROUP BY date
+                    ) t
+                    """,
+                    (telegram_id, today),
+                )
+                row = cur.fetchone()
+                return float(row[0]) if row else 0.0
+    except Exception:
+        return 0.0
