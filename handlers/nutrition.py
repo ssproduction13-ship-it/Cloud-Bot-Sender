@@ -239,8 +239,10 @@ async def _deliver_analysis(
             share_url = f"https://t.me/share/url?url={_urlp.quote(ref_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
         else:
             share_url = f"https://t.me/share/url?text={_urlp.quote(share_text, safe='')}"
+        _rbd = REFERRAL_JOIN_BONUS_DAYS
+        _rbd_word = "день" if _rbd % 10 == 1 and _rbd % 100 != 11 else "дня" if _rbd % 10 in (2, 3, 4) and _rbd % 100 not in (12, 13, 14) else "дней"
         await message.answer(
-            f"📤 Поделись с другом — получи +{REFERRAL_JOIN_BONUS_DAYS} дней!",
+            f"📤 Поделись с другом — получи +{_rbd} {_rbd_word}!",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(text="Отправить другу →", url=share_url),
             ]]),
