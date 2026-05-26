@@ -24,7 +24,3 @@ def streak_emoji(streak: int) -> str:
     return "🔥"
 
 
-def progress_bar(current: int, goal: int, width: int = 10) -> str:
-    filled = min(int(width * current / goal), width) if goal else 0
-    pct    = min(int(100 * current / goal), 100) if goal else 0
-    return f"{'█' * filled}{'░' * (width - filled)} {pct}%"
