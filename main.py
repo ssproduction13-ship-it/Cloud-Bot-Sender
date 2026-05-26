@@ -2281,15 +2281,197 @@ async def main():
         user = get_user(uid)
         await _show_premium_screen(callback.message.answer, uid, user)
 
-    # ── water tracker callbacks ─────────────────────────────────────────────────
-              user_states.pop(uid, None)
-              await message.answer(
-                  f"📡 *Рассылка завершена*\n"
-                  f"👥 Аудитория: {segment_label}\n"
-                  f"✅ Отправлено: {sent}  ❌ Ошибок: {failed}",
-                  parse_mode="Markdown",
-              )
-              return
+    # ── Helper: premium screen ────────────────────────────────────────────────
+    async def _show_premium_screen(send_fn, uid: int, user: dict | None):
+        lines = [
+            "⭐ *NutriAI Premium*\n",
+            "✅ Безлимит анализов в день",
+            "✅ КБЖУ к каждому блюду",
+            "✅ AI-план питания на день",
+            "✅ Недельные отчёты",
+            "✅ Стрики и достижения\n",
+            "Выбери тариф:",
+        ]
+        await send_fn("\n".join(lines), parse_mode="Markdown",
+                      reply_markup=premium_keyboard())
+
+    # ── Helper: referral screen ───────────────────────────────────────────────
+    async def _show_referral(send_fn, uid: int):
+        stats = get_referral_stats(uid)
+        link = ref_link(BOT_USERNAME, uid)
+        await send_fn(
+            f"🎁 *Реферальная программа*\n\n"
+            f"Приглашай друзей — получай бонусы:\n"
+            f"• *+3 дня* когда друг зарегистрируется\n"
+            f"• *+7 дней* когда оформит подписку\n\n"
+            f"Твоя ссылка:\n`{link}`\n\n"
+            f"👥 Приглашено: *{stats['total']}*  |  Оплатили: *{stats['paid']}*",
+            parse_mode="Markdown",
+        )
+
+    # ── General text message handler ──────────────────────────────────────────
+    @dp.message(F.text)
+    async def handle_text(message: Message):
+        uid = message.from_user.id
+        upsert_user(uid, message.from_user.username or "", message.from_user.first_name or "")
+        user = get_user(uid)
+        text = (message.text or "").strip()
+
+        _try_restore_onboard(uid)
+        state_data = _get_state(uid)
+        state = state_data.get("state")
+
+        # ── Onboarding text inputs ───────────────────────────────────────────
+        if state == "ob_age":
+            try:
+                age = int(text)
+                if not (10 <= age <= 100):
+                    raise ValueError
+            except ValueError:
+                await message.answer("⚠️ Введи возраст числом (например: 25):")
+                return
+            ob_data = state_data.get("data", {})
+            ob_data["age"] = age
+            await message.answer(
+                "📏 *Твой рост в сантиметрах?*\n\n_Например: 175_",
+                parse_mode="Markdown",
+            )
+            _set_onboard_state(uid, "ob_height", ob_data)
+            return
+
+        if state == "ob_height":
+            try:
+                height = float(text.replace(",", "."))
+                if not (100 <= height <= 250):
+                    raise ValueError
+            except ValueError:
+                await message.answer("⚠️ Введи рост числом в сантиметрах (например: 175):")
+                return
+            ob_data = state_data.get("data", {})
+            ob_data["height"] = height
+            await message.answer(
+                "⚖️ *Твой вес в килограммах?*\n\n_Например: 70 или 70.5_",
+                parse_mode="Markdown",
+            )
+            _set_onboard_state(uid, "ob_weight", ob_data)
+            return
+
+        if state == "ob_weight":
+            try:
+                weight = float(text.replace(",", "."))
+                if not (20 <= weight <= 400):
+                    raise ValueError
+            except ValueError:
+                await message.answer("⚠️ Введи вес числом в кг (например: 70):")
+                return
+            ob_data = state_data.get("data", {})
+            ob_data["weight"] = weight
+            await message.answer(
+                "⚡️ *Уровень физической активности?*",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🛋 Сидячий (офис, мало движения)", callback_data="ob_activity:sedentary")],
+                    [InlineKeyboardButton(text="🚶 Лёгкая (1-2 тренировки/нед)", callback_data="ob_activity:light")],
+                    [InlineKeyboardButton(text="🏃 Средняя (3-5 тренировок/нед)", callback_data="ob_activity:moderate")],
+                    [InlineKeyboardButton(text="💪 Высокая (6-7 тренировок/нед)", callback_data="ob_activity:active")],
+                    [InlineKeyboardButton(text="🔥 Очень высокая (физ. работа / 2x трен)", callback_data="ob_activity:very_active")],
+                ]),
+            )
+            _set_onboard_state(uid, "ob_activity", ob_data)
+            return
+
+        # ── Admin broadcast ──────────────────────────────────────────────────
+        if state == STATES["ADMIN_BROADCAST"]:
+            seg_data = state_data.get("data", {})
+            segment = seg_data.get("segment", "all_active")
+            segment_label = seg_data.get("segment_label", "Все активные")
+            users_list = get_users_by_segment(segment)
+            sent = failed = 0
+            for u in users_list:
+                try:
+                    await bot.send_message(u["telegram_id"], text, parse_mode="Markdown")
+                    sent += 1
+                except Exception:
+                    failed += 1
+                await asyncio.sleep(0.05)
+            user_states.pop(uid, None)
+            await message.answer(
+                f"📡 *Рассылка завершена*\n"
+                f"👥 Аудитория: {segment_label}\n"
+                f"✅ Отправлено: {sent}  ❌ Ошибок: {failed}",
+                parse_mode="Markdown",
+            )
+            return
+
+        # ── Menu buttons ─────────────────────────────────────────────────────
+        if text == BTN_PHOTO:
+            ok, reason = access_check(user)
+            if not ok:
+                await deny(message, reason)
+                return
+            await message.answer(
+                "📸 *Отправь фото блюда* — посчитаю КБЖУ.\n\n"
+                "_Держи телефон в 10–15 см от еды для лучшего результата_",
+                parse_mode="Markdown",
+            )
+            return
+
+        if text == BTN_MANUAL:
+            ok, reason = access_check(user)
+            if not ok:
+                await deny(message, reason)
+                return
+            _set_state(uid, STATES["MANUAL_ENTRY"])
+            await message.answer(
+                "✍️ *Что съел?*\n\n"
+                "_Напиши название блюда или продукта (например: «гречка 200г с курицей»)_\n\n"
+                "/cancel — отмена",
+                parse_mode="Markdown",
+            )
+            return
+
+        if text == BTN_PROGRESS:
+            ok, reason = access_check(user)
+            if not ok:
+                await deny(message, reason)
+                return
+            macros = get_daily_macros(uid)
+            progress = daily_progress_text(uid, user=user, macros=macros)
+            await message.answer(
+                f"📊 *Прогресс за сегодня*{progress}",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📅 История 7 дней", callback_data="history7")],
+                    [InlineKeyboardButton(text="📓 Дневник", callback_data="diary")],
+                ]),
+            )
+            return
+
+        if text == BTN_SUB:
+            track_event(uid, "premium_clicked")
+            await _show_premium_screen(message.answer, uid, user)
+            return
+
+        if text == BTN_REF:
+            track_event(uid, "referral_opened")
+            await _show_referral(message.answer, uid)
+            return
+
+        if text == BTN_PROFILE:
+            if not user:
+                await message.answer("Напиши /start для регистрации.")
+                return
+            await _send_status(message.answer, uid, user)
+            await message.answer(
+                "⚙️ *Профиль*",
+                parse_mode="Markdown",
+                reply_markup=profile_keyboard(uid, has_goal=bool(user.get("daily_goal"))),
+            )
+            return
+
+        if text == BTN_ADMIN and uid == ADMIN_ID:
+            await show_admin_panel(message.answer)
+            return
 
         # ── Correct entry ──────────────────────────────────────────────────────
         if state == STATES["CORRECT_ENTRY"]:
