@@ -242,7 +242,7 @@ async def _deliver_analysis(
         await message.answer(
             f"📤 Поделись с другом — получи +{REFERRAL_JOIN_BONUS_DAYS} дней!",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="📤 Поделиться и получить бонус", url=share_url),
+                InlineKeyboardButton(text="Отправить другу →", url=share_url),
             ]]),
         )
 
