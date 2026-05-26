@@ -24,3 +24,14 @@ def streak_emoji(streak: int) -> str:
     return "🔥"
 
 
+def progress_bar(current: int, goal: int, length: int = 10) -> str:
+    """Return a text progress bar, e.g. '████░░░░░░ 60%'."""
+    if not goal or goal <= 0:
+        return ""
+    ratio = min(current / goal, 1.0)
+    filled = round(ratio * length)
+    bar = "█" * filled + "░" * (length - filled)
+    pct = round(ratio * 100)
+    return f"{bar} {pct}%"
+
+
