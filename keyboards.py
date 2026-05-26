@@ -55,9 +55,10 @@ def diary_keyboard(entries: list) -> InlineKeyboardMarkup:
 
 
 def progress_inline_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="📋 Дневник", callback_data="diary"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Дневник",  callback_data="diary")],
+        [InlineKeyboardButton(text="📅 История",  callback_data="history7")],
+    ])
 
 
 def new_user_keyboard(uid: int) -> InlineKeyboardMarkup:
