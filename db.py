@@ -100,6 +100,14 @@ def init_db():
                     data_json   TEXT DEFAULT '{}',
                     updated_at  TEXT DEFAULT (NOW()::TEXT)
                 );
+
+                CREATE TABLE IF NOT EXISTS events (
+                    id          SERIAL PRIMARY KEY,
+                    telegram_id BIGINT,
+                    event_name  TEXT NOT NULL,
+                    payload     TEXT DEFAULT '{}',
+                    created_at  TEXT DEFAULT (NOW()::TEXT)
+                );
             """)
 
         # Commit table creations BEFORE the ALTER TABLE migration loop.
@@ -791,6 +799,37 @@ def get_water_today(telegram_id: int) -> int:
 
 
 # ── Segmented broadcast helpers ───────────────────────────────────────────────
+
+def track_event(telegram_id: int, event_name: str, payload: dict | None = None) -> None:
+    """Append a product analytics event. Fire-and-forget — never crashes the bot."""
+    import json as _json
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO events (telegram_id, event_name, payload) VALUES (%s, %s, %s)",
+                    (telegram_id, event_name, _json.dumps(payload or {})),
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+
+def get_events_summary(event_name: str, days: int = 7) -> int:
+    """Count unique users for an event in the last N days."""
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT COUNT(DISTINCT telegram_id) FROM events
+                       WHERE event_name=%s AND created_at >= NOW() - INTERVAL '%s days'""",
+                    (event_name, days),
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
 
 def get_users_by_segment(segment: str) -> list:
     """
