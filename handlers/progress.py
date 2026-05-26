@@ -58,9 +58,7 @@ async def cb_history7(callback: CallbackQuery):
         if kcal == 0:
             lines.append(f"{dn} {dt.strftime('%d.%m')}  —")
         elif goal:
-            pct = round(kcal / goal * 100)
-            bar = "●" * min(pct // 20, 5)
-            lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal}* / {goal}  {bar}")
+            lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal}* / {goal}")
         else:
             lines.append(f"{dn} {dt.strftime('%d.%m')}  *{kcal} ккал*")
     avg    = stats["avg_kcal"]
