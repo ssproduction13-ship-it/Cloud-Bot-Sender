@@ -19,17 +19,20 @@ router = Router()
 
 
 async def _show_premium_screen(send_fn, uid: int, user: dict | None):
-    lines = [
-        "⭐ *NutriAI Premium*\n",
-        "✅ Безлимит анализов в день",
-        "✅ КБЖУ к каждому блюду",
-        "✅ AI-план питания на день",
-        "✅ Недельные отчёты",
-        "✅ Стрики и достижения\n",
-        "Выбери тариф:",
-    ]
-    await send_fn("\n".join(lines), parse_mode="Markdown",
-                  reply_markup=premium_keyboard())
+    await send_fn(
+        "⭐ *NutriAI Premium*\n\n"
+        "Всё что нужно для реального результата:\n\n"
+        "📸 Безлимит AI-сканирований\n"
+        "💡 Персональный совет после каждого приёма пищи\n"
+        "📊 Недельные AI-отчёты о питании\n"
+        "🥩 Детальная аналитика КБЖУ\n"
+        "🔥 Расширенная статистика стриков\n"
+        "⚡ Приоритетная обработка запросов\n\n"
+        "_Бесплатно: 5 сканирований в день, базовый трекинг_\n\n"
+        "Выбери тариф 👇",
+        parse_mode="Markdown",
+        reply_markup=premium_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "show_premium")
