@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
-    Message, PhotoSize,
+    Message, PhotoSize, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
 
@@ -218,6 +218,70 @@ async def _deliver_analysis(
             f"Лучший результат — так держать! 💪",
             parse_mode="Markdown",
         )
+
+
+@router.callback_query(F.data == "food_photo_mode")
+async def cb_food_photo_mode(callback: CallbackQuery):
+    uid  = callback.from_user.id
+    user = get_user(uid)
+    ok, reason = access_check(user)
+    await callback.answer()
+    if not ok:
+        await deny(callback.message, reason)
+        return
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        "📸 *Отправь фото блюда* — посчитаю КБЖУ.\n\n"
+        "_Держи телефон в 10–15 см от еды для лучшего результата_",
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "food_text_mode")
+async def cb_food_text_mode(callback: CallbackQuery):
+    uid  = callback.from_user.id
+    user = get_user(uid)
+    ok, reason = access_check(user)
+    await callback.answer()
+    if not ok:
+        await deny(callback.message, reason)
+        return
+    _set_state(uid, STATES["MANUAL_ENTRY"])
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        "✍️ *Что съел?*\n\n"
+        "_Напиши название блюда (например: «гречка 200г с курицей»)_\n\n"
+        "/cancel — отмена",
+        parse_mode="Markdown",
+    )
+
+
+@router.callback_query(F.data == "food_kcal_mode")
+async def cb_food_kcal_mode(callback: CallbackQuery):
+    uid  = callback.from_user.id
+    user = get_user(uid)
+    ok, reason = access_check(user)
+    await callback.answer()
+    if not ok:
+        await deny(callback.message, reason)
+        return
+    _set_state(uid, STATES["MANUAL_ENTRY"])
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    await callback.message.answer(
+        "🔢 *Введи количество калорий:*\n\n"
+        "_Например: 450_\n\n"
+        "/cancel — отмена",
+        parse_mode="Markdown",
+    )
 
 
 @router.message(F.photo)
@@ -497,9 +561,12 @@ async def handle_text(message: Message, bot: Bot):
             await deny(message, reason)
             return
         await message.answer(
-            "📸 *Отправь фото блюда* — посчитаю КБЖУ.\n\n"
-            "_Держи телефон в 10–15 см от еды для лучшего результата_",
-            parse_mode="Markdown",
+            "Как хочешь добавить?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📸 Фото блюда",        callback_data="food_photo_mode")],
+                [InlineKeyboardButton(text="✍️ Описать словами",   callback_data="food_text_mode")],
+                [InlineKeyboardButton(text="🔢 Только калории",    callback_data="food_kcal_mode")],
+            ]),
         )
         return
 
