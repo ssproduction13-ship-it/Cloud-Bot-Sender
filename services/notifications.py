@@ -7,7 +7,7 @@ from aiogram import Bot
 from db import (
     get_active_users, get_daily_macros, get_daily_usage, get_weekly_stats,
     get_expiring_users, get_winback_users, get_streak_users_no_log_today,
-    track_event,
+    track_event, get_user_best_daily_protein_excl_today,
 )
 from utils.formatting import calc_daily_score, format_score, ai_score_comment
 from utils.helpers import streak_emoji
@@ -91,6 +91,15 @@ async def send_evening_summaries(bot: Bot):
                 f"{comment_line}",
                 parse_mode="Markdown",
             )
+            # Protein daily record — only in evening report
+            if macros["protein"] >= 80:
+                prev_best = get_user_best_daily_protein_excl_today(uid)
+                if macros["protein"] > prev_best:
+                    await bot.send_message(
+                        uid,
+                        f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\nЛучший результат — так держать! 💪",
+                        parse_mode="Markdown",
+                    )
         except Exception as e:
             log.debug(f"evening {uid}: {e}")
         await asyncio.sleep(0.05)
