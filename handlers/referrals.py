@@ -29,11 +29,12 @@ from urllib.parse import quote
               InlineKeyboardButton(text="📤 Отправить другу →", url=share_url),
           ]]),
       )
-  
 
-@router.callback_query(F.data == "ref_screen")
-async def cb_ref_screen(callback: CallbackQuery):
-    uid = callback.from_user.id
-    await callback.answer()
-    track_event(uid, "referral_opened")
-    await _show_referral(callback.message.answer, uid)
+
+  @router.callback_query(F.data == "ref_screen")
+  async def cb_ref_screen(callback: CallbackQuery):
+      uid = callback.from_user.id
+      await callback.answer()
+      track_event(uid, "referral_opened")
+      await _show_referral(callback.message.answer, uid)
+  
