@@ -103,6 +103,19 @@ def ai_score_comment(score_100: int, protein: float, carbs: float, kcal: int,
     ])
 
 
+def score_emoji(score_100: int) -> str:
+    """Return an emoji representing the nutrition score 0-100."""
+    if score_100 >= 85:
+        return "🏆"
+    if score_100 >= 70:
+        return "🥇"
+    if score_100 >= 55:
+        return "🥈"
+    if score_100 >= 40:
+        return "🥉"
+    return "💪"
+
+
 def detect_fun_reaction(food_name_lower: str, kcal: int | None) -> str | None:
     """Return a fun reaction for specific foods."""
     for kw in CHEAT_KEYWORDS:
