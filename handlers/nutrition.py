@@ -119,8 +119,11 @@ async def _deliver_analysis(
     prev_protein_best = get_user_best_daily_protein_excl_today(uid)
 
     entry_id = record_usage(uid, kcal, protein, fat, carbs, food_name)
-    if get_daily_usage(uid) == 1:
+    daily_count = get_daily_usage(uid)
+    if daily_count == 1:
         track_event(uid, "first_food_scan")
+    elif daily_count == 2:
+        track_event(uid, "second_food_scan")
 
     # P7: daily active user event
     track_event(uid, "daily_active_user")
@@ -215,6 +218,28 @@ async def _deliver_analysis(
             f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\n"
             f"Лучший результат — так держать! 💪",
             parse_mode="Markdown",
+        )
+
+    # Share button
+    if kcal and food_name:
+        import urllib.parse as _urlp
+        from config import BOT_USERNAME
+        prot_str = f" · Б{round(protein)}г" if protein else ""
+        fat_str  = f" · Ж{round(fat)}г"    if fat    else ""
+        carb_str = f" · У{round(carbs)}г"  if carbs  else ""
+        share_text = (
+            f"🥗 Засканировал {food_name} в NutriAI\n"
+            f"{kcal} ккал{prot_str}{fat_str}{carb_str}\n\n"
+            f"Трекай питание с AI 👉 @{BOT_USERNAME or 'NutriAI'}"
+        )
+        bot_link = f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else "https://t.me/share"
+        share_url = f"https://t.me/share/url?url={_urlp.quote(bot_link, safe='')}&text={_urlp.quote(share_text, safe='')}"
+        await message.answer(
+            "📤 _Поделись с друзьями — возможно, им тоже понравится_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="📤 Поделиться", url=share_url),
+            ]]),
         )
 
 
