@@ -822,12 +822,14 @@ def get_events_summary(event_name: str, days: int = 7) -> int:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT COUNT(DISTINCT telegram_id) FROM events
-                       WHERE event_name=%s AND created_at >= NOW() - INTERVAL '%s days'""",
+                       WHERE event_name=%s
+                         AND created_at::TIMESTAMP >= NOW() - (%s * INTERVAL '1 day')""",
                     (event_name, days),
                 )
                 row = cur.fetchone()
                 return int(row[0]) if row else 0
-    except Exception:
+    except Exception as e:
+        import logging; logging.getLogger(__name__).warning("get_events_summary error: %s", e)
         return 0
 
 
