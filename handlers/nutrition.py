@@ -655,7 +655,7 @@ async def handle_text(message: Message, bot: Bot):
         )
         return
 
-    if text == BTN_PROGRESS:
+    if text in (BTN_PROGRESS, "📊 Прогресс"):
         ok, reason = access_check(user)
         if not ok:
             await deny(message, reason)
@@ -698,6 +698,14 @@ async def handle_text(message: Message, bot: Bot):
         return
 
     # ── Default: treat as food description ────────────────────────────────
+    # Ignore old/unrecognized button texts (e.g. renamed buttons)
+    _OLD_BUTTONS = {"📊 Прогресс", "📊 Прогресс"}
+    if text in _OLD_BUTTONS or (text.startswith(("📸", "✍️", "📊", "⭐", "👥", "👤", "🛠")) and len(text) < 20 and not any(c.isdigit() for c in text)):
+        await message.answer(
+            "Нажми одну из кнопок меню ниже 👇",
+            reply_markup=main_keyboard(uid == ADMIN_ID),
+        )
+        return
     ok, reason = access_check(user)
     if not ok:
         await deny(message, reason)
