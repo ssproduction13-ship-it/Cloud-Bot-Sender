@@ -604,38 +604,37 @@ def get_total_stats():
             )
             wau = cur.fetchone()[0]
 
-            # D1 retention — users registered yesterday who used it today (their day 1)
-              # Using LEFT(created_at,10) instead of DATE() to avoid TEXT→DATE cast issues with tz suffix
-              cur.execute(
-                  """SELECT COUNT(*) FROM users u
-                     WHERE LEFT(u.created_at, 10) = %s
-                     AND EXISTS (
-                         SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
-                     )""",
-                  (yesterday_str, today_str),
-              )
-              d1_num = cur.fetchone()[0]
-              cur.execute(
-                  "SELECT COUNT(*) FROM users WHERE LEFT(created_at, 10) = %s", (yesterday_str,)
-              )
-              d1_den = cur.fetchone()[0]
-              d1_ret = round(d1_num / d1_den * 100) if d1_den else 0
+            # D1 retention — use LEFT(created_at,10) instead of DATE() to avoid TEXT tz-suffix cast issues
+            cur.execute(
+                """SELECT COUNT(*) FROM users u
+                   WHERE LEFT(u.created_at, 10) = %s
+                   AND EXISTS (
+                       SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
+                   )""",
+                (yesterday_str, today_str),
+            )
+            d1_num = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE LEFT(created_at, 10) = %s", (yesterday_str,)
+            )
+            d1_den = cur.fetchone()[0]
+            d1_ret = round(d1_num / d1_den * 100) if d1_den else 0
 
-              # D7 retention — users registered 7 days ago who used it today (their day 7)
-              cur.execute(
-                  """SELECT COUNT(*) FROM users u
-                     WHERE LEFT(u.created_at, 10) = %s
-                     AND EXISTS (
-                         SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
-                     )""",
-                  (day7_str, today_str),
-              )
-              d7_num = cur.fetchone()[0]
-              cur.execute(
-                  "SELECT COUNT(*) FROM users WHERE LEFT(created_at, 10) = %s", (day7_str,)
-              )
-              d7_den = cur.fetchone()[0]
-              d7_ret = round(d7_num / d7_den * 100) if d7_den else 0
+            # D7 retention — users registered 7 days ago who used it today (their day 7)
+            cur.execute(
+                """SELECT COUNT(*) FROM users u
+                   WHERE LEFT(u.created_at, 10) = %s
+                   AND EXISTS (
+                       SELECT 1 FROM usage g WHERE g.telegram_id=u.telegram_id AND g.date=%s
+                   )""",
+                (day7_str, today_str),
+            )
+            d7_num = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE LEFT(created_at, 10) = %s", (day7_str,)
+            )
+            d7_den = cur.fetchone()[0]
+            d7_ret = round(d7_num / d7_den * 100) if d7_den else 0
 
             cur.execute(
                 "SELECT COALESCE(AVG(streak_days),0) FROM users WHERE status IN ('beta','paid')"
