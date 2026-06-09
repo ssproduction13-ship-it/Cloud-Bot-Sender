@@ -66,8 +66,14 @@ def _parse_macros(raw: str):
     m = re.search(r"CARBS:([\d.]+)", raw);   carbs     = float(m.group(1)) if m else None
     m = re.search(r"NAME:(.+)", raw);        food_name = m.group(1).strip() if m else None
     display = re.sub(r"\s*(KCAL|PROTEIN|FAT|CARBS|NAME):[^\n]+", "", raw).strip()
+    # Sync displayed numbers with parsed (stored) values to prevent mismatch
+    if kcal is not None:
+        display = re.sub(r"\d+(?=\s*ккал)", str(kcal), display)
+    if protein is not None and fat is not None and carbs is not None:
+        display = re.sub(r"Б\s*[\d.]+", f"Б {round(protein)}", display)
+        display = re.sub(r"Ж\s*[\d.]+", f"Ж {round(fat)}", display)
+        display = re.sub(r"У\s*[\d.]+\s*г", f"У {round(carbs)} г", display)
     return display, kcal, protein, fat, carbs, food_name
-
 
 def _validate_analysis(display, kcal, protein, fat, carbs) -> tuple[bool, str | None]:
     if kcal is None:
