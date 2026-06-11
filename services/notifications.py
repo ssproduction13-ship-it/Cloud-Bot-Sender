@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from db import (
     get_active_users, get_daily_macros, get_daily_usage, get_weekly_stats,
@@ -194,7 +195,6 @@ async def send_winback_messages(bot: Bot):
             if streak > 2 else ""
         )
         try:
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             await bot.send_message(
                 uid,
                 f"👋 *{name}, скучаем по тебе!*\n\n"
