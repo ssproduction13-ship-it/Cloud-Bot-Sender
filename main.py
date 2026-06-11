@@ -71,7 +71,7 @@ async def main():
     await run_health_server()
 
     log.info("Bot started. Polling...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
