@@ -921,12 +921,19 @@ def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
 def fix_all_streaks() -> list[dict]:
     """
     Recalculate streak_days from actual usage history.
-    Counts consecutive days ending at the MOST RECENT log date.
-    Does NOT require logging today/yesterday — works after outages.
+
+    Algorithm: scan the last 90 days and find the LONGEST consecutive chain.
+    This correctly restores streaks broken by migrations/outages — e.g. a
+    15-day chain that ended before a 2-day gap is restored as 15, not 0.
+
+    best_streak is set to max(existing_best, longest_chain).
+    last_active_date is set to the END date of the longest chain.
     """
     from datetime import date as _date, timedelta as _td
 
     changes = []
+    today   = _date.today()
+    cutoff  = (today - _td(days=90)).isoformat()
 
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -943,21 +950,23 @@ def fix_all_streaks() -> list[dict]:
             old_streak = user["streak_days"] or 0
             old_best   = user["best_streak"] or 0
 
-            # Get all distinct logged dates for this user
+            # All distinct logged dates within the last 90 days
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT DISTINCT date FROM usage "
-                    "WHERE telegram_id=%s AND (deleted IS NULL OR deleted=FALSE) "
-                    "ORDER BY date DESC",
-                    (uid,),
+                    "WHERE telegram_id=%s "
+                    "  AND (deleted IS NULL OR deleted=FALSE) "
+                    "  AND date >= %s "
+                    "ORDER BY date ASC",
+                    (uid, cutoff),
                 )
                 rows = cur.fetchall()
 
             if not rows:
                 continue
 
-            # Build set of logged dates (TEXT column → convert to date obj)
-            logged = set()
+            # Parse dates
+            logged = []
             for r in rows:
                 v = r[0]
                 if isinstance(v, str):
@@ -965,24 +974,40 @@ def fix_all_streaks() -> list[dict]:
                         v = _date.fromisoformat(v[:10])
                     except ValueError:
                         continue
-                logged.add(v)
+                if isinstance(v, _date):
+                    logged.append(v)
 
-            # Find the most recent logged date (anchor)
-            anchor = max(logged)
+            if not logged:
+                continue
 
-            # Count consecutive days going backwards from anchor
-            streak = 0
-            check  = anchor
-            while check in logged:
-                streak += 1
-                check  -= _td(days=1)
+            logged.sort()
 
+            # Find the longest consecutive chain (scan once O(n))
+            best_len  = 1
+            best_end  = logged[0]
+            cur_len   = 1
+            cur_end   = logged[0]
+
+            for i in range(1, len(logged)):
+                if logged[i] - logged[i - 1] == _td(days=1):
+                    cur_len += 1
+                    cur_end  = logged[i]
+                else:
+                    # chain broken — reset
+                    cur_len = 1
+                    cur_end = logged[i]
+                if cur_len > best_len:
+                    best_len = cur_len
+                    best_end = cur_end
+
+            streak   = best_len
             new_best = max(old_best, streak)
+
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE users SET streak_days=%s, last_active_date=%s, best_streak=%s "
                     "WHERE telegram_id=%s",
-                    (streak, anchor.isoformat(), new_best, uid),
+                    (streak, best_end.isoformat(), new_best, uid),
                 )
             conn.commit()
 
