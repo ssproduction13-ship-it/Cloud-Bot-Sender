@@ -111,6 +111,7 @@ def admin_panel_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📈 Воронка",    callback_data="adm_funnel"),
+            InlineKeyboardButton(text="🔥 Стрики",     callback_data="adm_fix_streaks"),
         ],
     ])
 
