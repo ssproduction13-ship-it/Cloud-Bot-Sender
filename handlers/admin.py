@@ -13,6 +13,7 @@ from db import (
     get_user, set_status, approve_user, activate_subscription,
     get_all_users, get_active_users, get_total_stats, get_referral_stats,
     get_users_by_segment, track_event,
+    fix_all_streaks,
 )
 from keyboards import main_keyboard, admin_panel_keyboard, user_action_keyboard
 from services.state import user_states, _set_state
@@ -575,3 +576,23 @@ async def cb_activate(callback: CallbackQuery, bot: Bot):
             parse_mode="Markdown", reply_markup=main_keyboard(False))
     except Exception:
         pass
+
+  @router.message(Command("fixstreaks"))
+  async def cmd_fix_streaks(message: Message):
+      if message.from_user.id != ADMIN_ID:
+          return
+      await message.answer("🔧 Пересчитываю стрики по истории записей...")
+      try:
+          changes = fix_all_streaks()
+          if not changes:
+              await message.answer("✅ Все стрики уже верны, изменений нет.")
+              return
+          lines = [f"uid {c['telegram_id']}: {c['old']} → {c['new']}" for c in changes[:30]]
+          total = len(changes)
+          tail  = f"\n...и ещё {total - 30}" if total > 30 else ""
+          await message.answer(
+              f"✅ Пересчитано: {total} пользователей\n\n" + "\n".join(lines) + tail
+          )
+      except Exception as e:
+          await message.answer(f"❌ Ошибка: {e}")
+  
