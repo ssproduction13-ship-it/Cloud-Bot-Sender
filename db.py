@@ -363,8 +363,21 @@ def get_active_users():
 # ── Streak ─────────────────────────────────────────────────────────────────
 
 def update_streak(telegram_id, user=None) -> tuple[int, bool]:
-    """Pass pre-fetched user dict to avoid an extra DB round-trip."""
-    today = _utcnow().strftime("%Y-%m-%d")
+    """
+    Update streak when a user logs food today.
+
+    Truth source priority:
+    1. last_active_date == today  → already counted, return as-is.
+    2. last_active_date == yesterday → normal increment.
+    3. last_active_date is stale (e.g. after a migration/fix) → fall back to
+       checking the usage table directly: if there is an entry dated yesterday,
+       the user WAS active yesterday and the streak should continue.
+    4. Otherwise → reset to 1.
+
+    This makes the streak resilient to last_active_date being set to a
+    historical date by fix_all_streaks or any other admin operation.
+    """
+    today     = _utcnow().strftime("%Y-%m-%d")
     yesterday = (_utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     if user is None:
@@ -372,19 +385,39 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
     if not user:
         return 0, False
 
-    last = user.get("last_active_date")
+    last   = user.get("last_active_date")
     streak = user.get("streak_days") or 0
-    best = user.get("best_streak") or 0
+    best   = user.get("best_streak") or 0
 
+    # Already counted today — nothing to do
     if last == today:
         return streak, False
 
     if last == yesterday:
         streak += 1
     else:
-        streak = 1
+        # last_active_date is stale — check actual usage history as fallback
+        had_yesterday = False
+        try:
+            with get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT 1 FROM usage "
+                        "WHERE telegram_id=%s AND date=%s "
+                        "  AND (deleted IS NULL OR deleted=FALSE) "
+                        "LIMIT 1",
+                        (telegram_id, yesterday),
+                    )
+                    had_yesterday = cur.fetchone() is not None
+        except Exception:
+            pass
 
-    new_best = max(best, streak)
+        if had_yesterday:
+            streak += 1   # user really was active yesterday
+        else:
+            streak = 1    # genuine gap — reset
+
+    new_best  = max(best, streak)
     milestone = streak in (3, 7, 14, 30, 60, 100)
 
     with get_conn() as conn:
