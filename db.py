@@ -346,17 +346,31 @@ def get_all_users(status_filter=None):
             return [dict(r) for r in cur.fetchall()]
 
 def get_active_users():
+    """Return users active in the last 7 days with a valid subscription.
+
+    Paid users with an expired subscription are excluded — they have no bot
+    access and should not receive 'send your meal photo' notifications.
+    Beta (trial) users are included while their trial is active.
+    """
     week_ago = (_utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    now_iso  = _utcnow().isoformat()
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT DISTINCT u.* FROM users u
                 JOIN usage g ON g.telegram_id = u.telegram_id
-                WHERE u.status IN ('beta', 'paid')
-                  AND g.date >= %s
+                WHERE g.date >= %s
+                  AND (
+                      (u.status = 'beta'
+                       AND (u.trial_expires_at IS NULL OR u.trial_expires_at > %s))
+                      OR
+                      (u.status = 'paid'
+                       AND u.expires_at IS NOT NULL
+                       AND u.expires_at > %s)
+                  )
                 """,
-                (week_ago,),
+                (week_ago, now_iso, now_iso),
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -396,30 +410,32 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
     if last == yesterday:
         streak += 1
     else:
-        # last_active_date is stale (e.g. after migration/fix_all_streaks).
-        # Check the usage table for the last 2 days so a 1-day migration gap
-        # does not wipe an honest streak.
-        two_days_ago = (_utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
-        had_recent = False
+        # last_active_date is stale (e.g. set by fix_all_streaks to a historical
+        # date). Check the usage table for yesterday specifically.
+        # NOTE: we must check ONLY yesterday, not today — record_usage has
+        # already inserted today's entry before this function runs, so a
+        # "date >= two_days_ago" query would find today's row and falsely
+        # preserve the streak even after a multi-day gap.
+        had_yesterday = False
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT 1 FROM usage "
-                        "WHERE telegram_id=%s AND date >= %s "
+                        "WHERE telegram_id=%s AND date=%s "
                         "  AND (deleted IS NULL OR deleted=FALSE) "
                         "LIMIT 1",
-                        (telegram_id, two_days_ago),
+                        (telegram_id, yesterday),
                     )
-                    had_recent = cur.fetchone() is not None
+                    had_yesterday = cur.fetchone() is not None
         except Exception as _e:
             import logging as _log
             _log.getLogger(__name__).warning(
                 "update_streak fallback query failed uid=%s: %s", telegram_id, _e
             )
-            had_recent = streak > 1  # fail-safe: preserve existing streak on DB error
+            had_yesterday = streak > 1  # fail-safe: preserve streak on DB error
 
-        if had_recent:
+        if had_yesterday:
             streak += 1
         else:
             streak = 1    # genuine gap — reset
@@ -775,21 +791,29 @@ def get_winback_users() -> list:
 
 
 def get_streak_users_no_log_today() -> list:
-    """Return active users with streak > 0 who have no entries today."""
-    today = _utcnow().strftime("%Y-%m-%d")
+    """Return active users with a still-alive streak who have no entries today.
+
+    Only includes users where last_active_date >= yesterday — i.e. the streak
+    is genuinely alive. Users who already missed a day (streak is effectively
+    broken) are excluded so we never send 'You have a N-day streak!' to someone
+    whose streak has already reset.
+    """
+    today     = _utcnow().strftime("%Y-%m-%d")
+    yesterday = (_utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 """SELECT u.* FROM users u
                    WHERE u.streak_days > 0
                      AND u.status IN ('beta', 'paid')
+                     AND u.last_active_date >= %s
                      AND NOT EXISTS (
                          SELECT 1 FROM usage g
                          WHERE g.telegram_id = u.telegram_id
                            AND g.date = %s
                            AND (g.deleted IS NULL OR g.deleted = FALSE)
                      )""",
-                (today,),
+                (yesterday, today),
             )
             return [dict(r) for r in cur.fetchall()]
 
@@ -1042,13 +1066,20 @@ def fix_all_streaks() -> list[dict]:
 
             streak          = best_len
             new_best        = max(old_best, streak)
-            most_recent_log = logged[-1]          # last date user actually logged
+            most_recent_log = logged[-1]   # last date user actually logged
+
+            # Bridge migration gaps: if the most recent log is older than
+            # yesterday, use yesterday as last_active_date so the NEXT log
+            # continues the streak via the normal yesterday-check path
+            # instead of hitting the fallback and resetting to 1.
+            yesterday_d = today - _td(days=1)
+            bridge_date = most_recent_log if most_recent_log >= yesterday_d else yesterday_d
 
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE users SET streak_days=%s, last_active_date=%s, best_streak=%s "
                     "WHERE telegram_id=%s",
-                    (streak, most_recent_log.isoformat(), new_best, uid),
+                    (streak, bridge_date.isoformat(), new_best, uid),
                 )
             conn.commit()
 
