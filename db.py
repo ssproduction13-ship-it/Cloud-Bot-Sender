@@ -936,7 +936,7 @@ def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
               users = list(cur.fetchall())
 
           for user in users:
-              uid = user["telegram_id"]
+              uid        = user["telegram_id"]
               old_streak = user["streak_days"] or 0
               old_best   = user["best_streak"] or 0
 
@@ -956,24 +956,25 @@ def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
               for r in rows:
                   v = r[0]
                   if isinstance(v, str):
-                      from datetime import date as _d2
-                      v = _d2.fromisoformat(v)
+                      v = _date.fromisoformat(v)
                   logged.add(v)
 
               anchor = today if today in logged else (today - _td(days=1))
               if anchor not in logged:
                   if old_streak not in (0, None):
                       with conn.cursor() as cur:
-                          cur.execute("UPDATE users SET streak_days=0 WHERE telegram_id=%s", (uid,))
+                          cur.execute(
+                              "UPDATE users SET streak_days=0 WHERE telegram_id=%s", (uid,)
+                          )
                       conn.commit()
                       changes.append({"telegram_id": uid, "old": old_streak, "new": 0})
                   continue
 
               streak = 0
-              check = anchor
+              check  = anchor
               while check in logged:
                   streak += 1
-                  check -= _td(days=1)
+                  check  -= _td(days=1)
 
               new_best = max(old_best, streak)
               with conn.cursor() as cur:
