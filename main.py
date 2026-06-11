@@ -57,13 +57,15 @@ async def main():
     dp.include_router(progress.router)
     dp.include_router(nutrition.router)   # F.photo + F.text catch-all — LAST
 
+    # misfire_grace_time: if bot restarts after scheduled time,
+    # the job fires immediately if within the grace window (seconds)
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(send_morning_checkins,  "cron", hour=3,  minute=0,  args=[bot])
-    scheduler.add_job(send_evening_summaries, "cron", hour=17, minute=0,  args=[bot])
-    scheduler.add_job(send_weekly_reports,    "cron", day_of_week="mon", hour=4, minute=0, args=[bot])
-    scheduler.add_job(send_expiry_reminders,  "cron", hour=4,  minute=30, args=[bot])
-    scheduler.add_job(send_winback_messages,  "cron", hour=4,  minute=45, args=[bot])
-    scheduler.add_job(send_streak_reminders,  "cron", hour=16, minute=30, args=[bot])
+    scheduler.add_job(send_morning_checkins,  "cron", hour=5,  minute=0,  args=[bot], misfire_grace_time=7200, coalesce=True)
+    scheduler.add_job(send_evening_summaries, "cron", hour=17, minute=0,  args=[bot], misfire_grace_time=7200, coalesce=True)
+    scheduler.add_job(send_weekly_reports,    "cron", day_of_week="mon", hour=4, minute=0, args=[bot], misfire_grace_time=7200, coalesce=True)
+    scheduler.add_job(send_expiry_reminders,  "cron", hour=4,  minute=30, args=[bot], misfire_grace_time=3600, coalesce=True)
+    scheduler.add_job(send_winback_messages,  "cron", hour=4,  minute=45, args=[bot], misfire_grace_time=3600, coalesce=True)
+    scheduler.add_job(send_streak_reminders,  "cron", hour=16, minute=30, args=[bot], misfire_grace_time=7200, coalesce=True)
     scheduler.start()
 
     await run_health_server()
