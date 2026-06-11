@@ -918,12 +918,14 @@ def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
     except Exception:
         return 0.0
 
-
 def fix_all_streaks() -> list[dict]:
-    """Recalculate streak_days from actual usage history for all users."""
+    """
+    Recalculate streak_days from actual usage history.
+    Counts consecutive days ending at the MOST RECENT log date.
+    Does NOT require logging today/yesterday — works after outages.
+    """
     from datetime import date as _date, timedelta as _td
 
-    today = _utcnow().date()
     changes = []
 
     with get_conn() as conn:
@@ -941,6 +943,7 @@ def fix_all_streaks() -> list[dict]:
             old_streak = user["streak_days"] or 0
             old_best   = user["best_streak"] or 0
 
+            # Get all distinct logged dates for this user
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT DISTINCT date FROM usage "
@@ -953,24 +956,21 @@ def fix_all_streaks() -> list[dict]:
             if not rows:
                 continue
 
+            # Build set of logged dates (TEXT column → convert to date obj)
             logged = set()
             for r in rows:
                 v = r[0]
                 if isinstance(v, str):
-                    v = _date.fromisoformat(v)
+                    try:
+                        v = _date.fromisoformat(v[:10])
+                    except ValueError:
+                        continue
                 logged.add(v)
 
-            anchor = today if today in logged else (today - _td(days=1))
-            if anchor not in logged:
-                if old_streak not in (0, None):
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            "UPDATE users SET streak_days=0 WHERE telegram_id=%s", (uid,)
-                        )
-                    conn.commit()
-                    changes.append({"telegram_id": uid, "old": old_streak, "new": 0})
-                continue
+            # Find the most recent logged date (anchor)
+            anchor = max(logged)
 
+            # Count consecutive days going backwards from anchor
             streak = 0
             check  = anchor
             while check in logged:
