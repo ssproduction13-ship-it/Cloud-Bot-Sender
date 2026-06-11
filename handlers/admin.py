@@ -577,22 +577,22 @@ async def cb_activate(callback: CallbackQuery, bot: Bot):
     except Exception:
         pass
 
-  @router.message(Command("fixstreaks"))
-  async def cmd_fix_streaks(message: Message):
-      if message.from_user.id != ADMIN_ID:
-          return
-      await message.answer("🔧 Пересчитываю стрики по истории записей...")
-      try:
-          changes = fix_all_streaks()
-          if not changes:
-              await message.answer("✅ Все стрики уже верны, изменений нет.")
-              return
-          lines = [f"uid {c['telegram_id']}: {c['old']} → {c['new']}" for c in changes[:30]]
-          total = len(changes)
-          tail  = f"\n...и ещё {total - 30}" if total > 30 else ""
-          await message.answer(
-              f"✅ Пересчитано: {total} пользователей\n\n" + "\n".join(lines) + tail
-          )
-      except Exception as e:
-          await message.answer(f"❌ Ошибка: {e}")
-  
+
+@router.message(Command("fixstreaks"))
+async def cmd_fix_streaks(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("🔧 Пересчитываю стрики по истории записей...")
+    try:
+        changes = fix_all_streaks()
+        if not changes:
+            await message.answer("✅ Все стрики уже верны, изменений нет.")
+            return
+        lines_out = [f"uid {c['telegram_id']}: {c['old']} → {c['new']}" for c in changes[:30]]
+        total = len(changes)
+        tail  = f"\n...и ещё {total - 30}" if total > 30 else ""
+        await message.answer(
+            f"✅ Пересчитано: {total} пользователей\n\n" + "\n".join(lines_out) + tail
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
