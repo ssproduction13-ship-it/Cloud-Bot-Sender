@@ -600,38 +600,33 @@ async def cmd_fix_streaks(message: Message):
 
 @router.message(Command("checkstreaks"))
 async def cmd_check_streaks(message: Message):
-    """Dry-run: show what fix_all_streaks WOULD do, without changing anything."""
     if message.from_user.id != ADMIN_ID:
         return
     from datetime import date as _date, timedelta as _td
-    from db import get_conn
-    import psycopg2.extras
-    from db import _utcnow
-    await message.answer("🔍 Проверяю стрики (без изменений)...")
+    import psycopg2.extras as _pge
+    from db import get_conn, _utcnow
+    await message.answer("Считаю стрики по истории...")
     try:
         rows_out = []
         with get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor(cursor_factory=_pge.RealDictCursor) as cur:
                 cur.execute(
                     "SELECT DISTINCT u.telegram_id, u.streak_days, u.first_name "
-                    "FROM users u "
-                    "JOIN usage g ON g.telegram_id = u.telegram_id "
-                    "WHERE (g.deleted IS NULL OR g.deleted = FALSE) "
-                    "ORDER BY u.streak_days DESC"
+                    "FROM users u JOIN usage g ON g.telegram_id=u.telegram_id "
+                    "WHERE (g.deleted IS NULL OR g.deleted=FALSE) ORDER BY u.streak_days DESC"
                 )
                 users = list(cur.fetchall())
             for user in users:
                 uid = user["telegram_id"]
                 cur_streak = user["streak_days"] or 0
                 name = (user.get("first_name") or str(uid))[:12]
-                with conn.cursor() as cur2:
-                    cur2.execute(
-                        "SELECT DISTINCT date FROM usage "
-                        "WHERE telegram_id=%s AND (deleted IS NULL OR deleted=FALSE) "
-                        "ORDER BY date DESC LIMIT 30",
+                with conn.cursor() as c2:
+                    c2.execute(
+                        "SELECT DISTINCT date FROM usage WHERE telegram_id=%s"
+                        " AND (deleted IS NULL OR deleted=FALSE) ORDER BY date DESC LIMIT 40",
                         (uid,),
                     )
-                    date_rows = cur2.fetchall()
+                    date_rows = c2.fetchall()
                 logged = set()
                 for dr in date_rows:
                     v = dr[0]
@@ -639,27 +634,20 @@ async def cmd_check_streaks(message: Message):
                         try: v = _date.fromisoformat(v[:10])
                         except: continue
                     logged.add(v)
-                if not logged:
-                    continue
+                if not logged: continue
                 anchor = max(logged)
-                real_streak = 0
-                check = anchor
-                while check in logged:
-                    real_streak += 1
-                    check -= _td(days=1)
-                recent = sorted(logged, reverse=True)[:5]
-                recent_str = ", ".join(str(x) for x in recent)
-                rows_out.append(f"{name} (uid {uid}): DB={cur_streak} → real={real_streak} | last 5: {recent_str}")
+                real = 0
+                chk = anchor
+                while chk in logged:
+                    real += 1
+                    chk -= _td(days=1)
+                recent = ", ".join(str(x) for x in sorted(logged, reverse=True)[:4])
+                rows_out.append(f"{name} | DB={cur_streak} real={real} | {recent}")
         if not rows_out:
             await message.answer("Нет пользователей с записями.")
             return
-        text = "📊 Стрики (расчёт без изменений):
-
-" + "
-".join(rows_out[:20])
-        text += "
-
-Когда всё верно — запусти /fixstreaks"
+        text = "Стрики (без изменений):\n\n" + "\n".join(rows_out[:25])
+        text += "\n\nЕсли верно — запусти /fixstreaks"
         await message.answer(text)
     except Exception as e:
-        await message.answer(f"❌ {e}")
+        await message.answer(f"Ошибка: {e}")
