@@ -917,3 +917,75 @@ def get_user_best_daily_protein_excl_today(telegram_id: int) -> float:
                 return float(row[0]) if row else 0.0
     except Exception:
         return 0.0
+
+  def fix_all_streaks() -> list[dict]:
+      """Recalculate streak_days from actual usage history for all users."""
+      from datetime import date as _date, timedelta as _td
+
+      today = _utcnow().date()
+      changes = []
+
+      with get_conn() as conn:
+          with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+              cur.execute(
+                  "SELECT DISTINCT u.telegram_id, u.streak_days, u.best_streak "
+                  "FROM users u "
+                  "JOIN usage g ON g.telegram_id = u.telegram_id "
+                  "WHERE (g.deleted IS NULL OR g.deleted = FALSE)"
+              )
+              users = list(cur.fetchall())
+
+          for user in users:
+              uid = user["telegram_id"]
+              old_streak = user["streak_days"] or 0
+              old_best   = user["best_streak"] or 0
+
+              with conn.cursor() as cur:
+                  cur.execute(
+                      "SELECT DISTINCT date FROM usage "
+                      "WHERE telegram_id=%s AND (deleted IS NULL OR deleted=FALSE) "
+                      "ORDER BY date DESC",
+                      (uid,),
+                  )
+                  rows = cur.fetchall()
+
+              if not rows:
+                  continue
+
+              logged = set()
+              for r in rows:
+                  v = r[0]
+                  if isinstance(v, str):
+                      from datetime import date as _d2
+                      v = _d2.fromisoformat(v)
+                  logged.add(v)
+
+              anchor = today if today in logged else (today - _td(days=1))
+              if anchor not in logged:
+                  if old_streak not in (0, None):
+                      with conn.cursor() as cur:
+                          cur.execute("UPDATE users SET streak_days=0 WHERE telegram_id=%s", (uid,))
+                      conn.commit()
+                      changes.append({"telegram_id": uid, "old": old_streak, "new": 0})
+                  continue
+
+              streak = 0
+              check = anchor
+              while check in logged:
+                  streak += 1
+                  check -= _td(days=1)
+
+              new_best = max(old_best, streak)
+              with conn.cursor() as cur:
+                  cur.execute(
+                      "UPDATE users SET streak_days=%s, last_active_date=%s, best_streak=%s "
+                      "WHERE telegram_id=%s",
+                      (streak, anchor.isoformat(), new_best, uid),
+                  )
+              conn.commit()
+
+              if streak != old_streak:
+                  changes.append({"telegram_id": uid, "old": old_streak, "new": streak})
+
+      return changes
+  
