@@ -396,24 +396,31 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
     if last == yesterday:
         streak += 1
     else:
-        # last_active_date is stale — check actual usage history as fallback
-        had_yesterday = False
+        # last_active_date is stale (e.g. after migration/fix_all_streaks).
+        # Check the usage table for the last 2 days so a 1-day migration gap
+        # does not wipe an honest streak.
+        two_days_ago = (_utcnow() - timedelta(days=2)).strftime("%Y-%m-%d")
+        had_recent = False
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT 1 FROM usage "
-                        "WHERE telegram_id=%s AND date=%s "
+                        "WHERE telegram_id=%s AND date >= %s "
                         "  AND (deleted IS NULL OR deleted=FALSE) "
                         "LIMIT 1",
-                        (telegram_id, yesterday),
+                        (telegram_id, two_days_ago),
                     )
-                    had_yesterday = cur.fetchone() is not None
-        except Exception:
-            pass
+                    had_recent = cur.fetchone() is not None
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "update_streak fallback query failed uid=%s: %s", telegram_id, _e
+            )
+            had_recent = streak > 1  # fail-safe: preserve existing streak on DB error
 
-        if had_yesterday:
-            streak += 1   # user really was active yesterday
+        if had_recent:
+            streak += 1
         else:
             streak = 1    # genuine gap — reset
 
@@ -1033,14 +1040,15 @@ def fix_all_streaks() -> list[dict]:
                     best_len = cur_len
                     best_end = cur_end
 
-            streak   = best_len
-            new_best = max(old_best, streak)
+            streak          = best_len
+            new_best        = max(old_best, streak)
+            most_recent_log = logged[-1]          # last date user actually logged
 
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE users SET streak_days=%s, last_active_date=%s, best_streak=%s "
                     "WHERE telegram_id=%s",
-                    (streak, best_end.isoformat(), new_best, uid),
+                    (streak, most_recent_log.isoformat(), new_best, uid),
                 )
             conn.commit()
 
