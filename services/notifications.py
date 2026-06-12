@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db import (
     get_active_users, get_daily_macros, get_daily_usage, get_weekly_stats,
     get_expiring_users, get_winback_users, get_streak_users_no_log_today,
-    track_event, get_user_best_daily_protein_excl_today,
+    track_event, get_user_best_daily_protein_excl_today, get_user,
 )
 from utils.formatting import calc_daily_score, format_score, ai_score_comment
 from utils.helpers import streak_emoji, days_ru
@@ -211,9 +211,12 @@ async def send_winback_messages(bot: Bot):
 
 async def send_streak_reminders(bot: Bot):
     for user in get_streak_users_no_log_today():
-        uid    = user["telegram_id"]
-        streak = user.get("streak_days", 0)
-        name   = (user.get("first_name") or "").split()[0] or "Привет"
+        uid  = user["telegram_id"]
+        # Fetch fresh user row — same source as the Profile button —
+        # so streak_days is never stale from the batch query.
+        fresh  = get_user(uid) or user
+        streak = fresh.get("streak_days", 0)
+        name   = (fresh.get("first_name") or "").split()[0] or "Привет"
         try:
             await bot.send_message(
                 uid,
