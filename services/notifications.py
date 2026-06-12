@@ -212,6 +212,14 @@ async def send_winback_messages(bot: Bot):
 async def send_streak_reminders(bot: Bot):
     for user in get_streak_users_no_log_today():
         uid  = user["telegram_id"]
+
+        # Real-time guard: the batch query may have run before the user
+        # scanned, or the bot may have restarted and re-fired the job.
+        # get_daily_usage always hits the DB fresh — skip if already logged.
+        if get_daily_usage(uid) > 0:
+            log.debug(f"streak reminder skipped {uid}: already has logs today")
+            continue
+
         # Fetch fresh user row — same source as the Profile button —
         # so streak_days is never stale from the batch query.
         fresh  = get_user(uid) or user
