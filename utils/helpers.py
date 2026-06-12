@@ -24,6 +24,18 @@ def streak_emoji(streak: int) -> str:
     return "🔥"
 
 
+def days_ru(n: int) -> str:
+    """Return correct Russian plural form for 'день/дня/дней'."""
+    if 11 <= (n % 100) <= 14:
+        return "дней"
+    r = n % 10
+    if r == 1:
+        return "день"
+    if 2 <= r <= 4:
+        return "дня"
+    return "дней"
+
+
 def progress_bar(current: int, goal: int, length: int = 10) -> str:
     """Return a text progress bar, e.g. '████░░░░░░ 60%'."""
     if not goal or goal <= 0:
