@@ -11,7 +11,7 @@ from db import (
     track_event, get_user_best_daily_protein_excl_today,
 )
 from utils.formatting import calc_daily_score, format_score, ai_score_comment
-from utils.helpers import streak_emoji
+from utils.helpers import streak_emoji, days_ru
 from keyboards import premium_keyboard
 from config import STREAK_MILESTONES
 
@@ -35,8 +35,7 @@ async def send_morning_checkins(bot: Bot):
             else:
                 goal_block = "Цель не задана — настрой в профиле"
             streak_line = (
-                f"\n{streak_emoji(streak)} Серия *{streak} "
-                f"{'день' if streak == 1 else 'дня' if 2 <= streak <= 4 else 'дней'}* подряд — держи темп!"
+                f"\n{streak_emoji(streak)} Серия *{streak} {days_ru(streak)}* подряд — держи темп!"
                 if streak > 1 else ""
             )
             await bot.send_message(
@@ -78,8 +77,7 @@ async def send_evening_summaries(bot: Bot):
                 if macros["protein"] > 0 else ""
             )
             s_line = (
-                f"\n🔥 Серия: *{streak} "
-                f"{'день' if streak==1 else 'дня' if 2<=streak<=4 else 'дней'}* подряд"
+                f"\n🔥 Серия: *{streak} {days_ru(streak)}* подряд"
                 if streak > 0 else ""
             )
             comment_line = f"\n\n{comment}" if comment else ""
@@ -98,7 +96,7 @@ async def send_evening_summaries(bot: Bot):
                 if macros["protein"] > prev_best:
                     await bot.send_message(
                         uid,
-                        f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\nЛучший результат — так держать! 💪",
+                        f"🥩 *Рекорд по белку за день: {round(macros['protein'])}г!*\n\nЛучши�� результат — так держать! 💪",
                         parse_mode="Markdown",
                     )
         except Exception as e:
@@ -138,7 +136,7 @@ async def send_weekly_reports(bot: Bot):
                 else "🌱 Ещё немного практики — привычка закрепится!"
             )
             streak_line = (
-                f"\n🔥 Серия: *{streak} дней* — не останавливайся!"
+                f"\n🔥 Серия: *{streak} {days_ru(streak)}* — не останавливайся!"
                 if streak > 1 else ""
             )
             await bot.send_message(
@@ -191,13 +189,13 @@ async def send_winback_messages(bot: Bot):
         name   = (user.get("first_name") or "").split()[0] or "Привет"
         streak = user.get("streak_days", 0)
         streak_line = (
-            f"\n🔥 У тебя был стрик *{streak} дней* — не дай ему пропасть!"
+            f"\n🔥 У тебя был стрик *{streak} {days_ru(streak)}* — не дай ему пропасть!"
             if streak > 2 else ""
         )
         try:
             await bot.send_message(
                 uid,
-                f"👋 *{name}, скучаем по тебе!*\n\n"
+                f"���� *{name}, скучаем по тебе!*\n\n"
                 f"Прошло 3 дня с окончания подписки."
                 f"{streak_line}\n\n"
                 f"Возвращайся — продолжи следить за питанием и прогрессом! 💪",
@@ -220,7 +218,7 @@ async def send_streak_reminders(bot: Bot):
             await bot.send_message(
                 uid,
                 f"🔥 *{name}, не прерывай серию!*\n\n"
-                f"Ты на *{streak} {'день' if streak == 1 else 'дней'}* подряд — "
+                f"Ты на *{streak} {days_ru(streak)}* подряд — "
                 f"сегодня ещё нет записей.\n\n"
                 f"📸 Сфотографируй ужин или введи что ел — займёт 10 секунд!",
                 parse_mode="Markdown",
