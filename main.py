@@ -65,7 +65,7 @@ async def main():
     scheduler.add_job(send_weekly_reports,    "cron", day_of_week="mon", hour=4, minute=0, args=[bot], misfire_grace_time=7200, coalesce=True)
     scheduler.add_job(send_expiry_reminders,  "cron", hour=4,  minute=30, args=[bot], misfire_grace_time=3600, coalesce=True)
     scheduler.add_job(send_winback_messages,  "cron", hour=4,  minute=45, args=[bot], misfire_grace_time=3600, coalesce=True)
-    scheduler.add_job(send_streak_reminders,  "cron", hour=16, minute=30, args=[bot], misfire_grace_time=600,  coalesce=True)
+    scheduler.add_job(send_streak_reminders,  "cron", hour=16, minute=30, args=[bot], misfire_grace_time=7200, coalesce=True)
     scheduler.start()
 
     await run_health_server()
