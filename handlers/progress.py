@@ -10,10 +10,26 @@ from config import ADMIN_ID
 from db import (
     get_user, get_weekly_stats, get_entries_today, get_daily_macros,
     update_entry_calories, delete_entry, reset_today_entries,
+    update_entry_calories, delete_entry, reset_today_entries,
+    check_subscription_expired, is_trial_expired,
 )
 from keyboards import main_keyboard, diary_keyboard
 from services.state import user_states, _set_state
 from config import STATES
+
+
+def access_check(user_row):
+    if user_row is None: return False, "not_registered"
+    s = user_row["status"]
+    if s == "blocked": return False, "blocked"
+    if s == "pending": return False, "pending"
+    if s == "paid":
+        if check_subscription_expired(user_row): return False, "sub_expired"
+        return True, "paid"
+    if s == "beta":
+        if is_trial_expired(user_row): return False, "trial_expired"
+        return True, "beta"
+    return False, "unknown"
 
 router = Router()
 
@@ -42,6 +58,11 @@ async def cb_noop(callback: CallbackQuery):
 @router.callback_query(F.data == "history7")
 async def cb_history7(callback: CallbackQuery):
     uid = callback.from_user.id
+    user = get_user(uid)
+    ok, reason = access_check(user)
+    if not ok:
+        await callback.answer("⛔ Нет доступа. Проверь подписку.", show_alert=True)
+        return
     await callback.answer()
     stats  = get_weekly_stats(uid)
     days   = stats["dates"]
@@ -95,6 +116,11 @@ async def cb_history7(callback: CallbackQuery):
 @router.callback_query(F.data == "diary")
 async def cb_diary(callback: CallbackQuery):
     uid = callback.from_user.id
+    user = get_user(uid)
+    ok, reason = access_check(user)
+    if not ok:
+        await callback.answer("⛔ Нет доступа. Проверь подписку.", show_alert=True)
+        return
     await callback.answer()
     await _show_diary(callback.message.answer, uid)
 
