@@ -9,6 +9,7 @@ from db import (
     get_active_users, get_daily_macros, get_daily_usage, get_weekly_stats,
     get_expiring_users, get_winback_users, get_streak_users_no_log_today,
     track_event, get_user_best_daily_protein_excl_today, get_user,
+    get_users_for_notifications,
 )
 from utils.formatting import calc_daily_score, format_score, ai_score_comment
 from utils.helpers import streak_emoji, days_ru
@@ -19,7 +20,7 @@ log = logging.getLogger(__name__)
 
 
 async def send_morning_checkins(bot: Bot):
-    users = get_active_users()
+    users = get_users_for_notifications()
     for user in users:
         uid  = user["telegram_id"]
         goal = user.get("daily_goal")
@@ -52,7 +53,7 @@ async def send_morning_checkins(bot: Bot):
 
 
 async def send_evening_summaries(bot: Bot):
-    users = get_active_users()
+    users = get_users_for_notifications()
     for user in users:
         uid  = user["telegram_id"]
         goal = user.get("daily_goal")
