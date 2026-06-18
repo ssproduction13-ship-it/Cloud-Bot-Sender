@@ -48,7 +48,7 @@ async def send_morning_checkins(bot: Bot):
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.debug(f"morning {uid}: {e}")
+            log.warning(f"morning uid={uid}: {e}")
         await asyncio.sleep(0.05)
 
 
@@ -113,7 +113,7 @@ async def send_evening_summaries(bot: Bot):
                         parse_mode="Markdown",
                     )
         except Exception as e:
-            log.debug(f"evening {uid}: {e}")
+            log.warning(f"evening uid={uid}: {e}")
         await asyncio.sleep(0.05)
 
 
@@ -164,7 +164,7 @@ async def send_weekly_reports(bot: Bot):
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.debug(f"weekly {uid}: {e}")
+            log.warning(f"weekly uid={uid}: {e}")
         await asyncio.sleep(0.05)
 
 
@@ -192,7 +192,7 @@ async def send_expiry_reminders(bot: Bot):
                 await bot.send_message(uid, msg, parse_mode="Markdown",
                                        reply_markup=premium_keyboard())
             except Exception as e:
-                log.debug(f"expiry reminder {uid}: {e}")
+                log.warning(f"expiry reminder uid={uid}: {e}")
             await asyncio.sleep(0.05)
 
 
@@ -218,7 +218,7 @@ async def send_winback_messages(bot: Bot):
                 ]]),
             )
         except Exception as e:
-            log.debug(f"winback {uid}: {e}")
+            log.warning(f"winback uid={uid}: {e}")
         await asyncio.sleep(0.05)
 
 
@@ -248,5 +248,5 @@ async def send_streak_reminders(bot: Bot):
                 parse_mode="Markdown",
             )
         except Exception as e:
-            log.debug(f"streak reminder {uid}: {e}")
+            log.warning(f"streak reminder uid={uid}: {e}")
         await asyncio.sleep(0.05)
