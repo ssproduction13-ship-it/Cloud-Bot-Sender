@@ -63,6 +63,18 @@ async def send_evening_summaries(bot: Bot):
             macros = get_daily_macros(uid)
             total  = macros["kcal"]
             if total == 0:
+                name = (user.get("first_name") or "").split()[0] or "Привет"
+                streak_warn = (
+                    f"\n\n⚠️ Сегодня ты ещё не логировал — стрик *{streak} {days_ru(streak)}* под угрозой!"
+                    if streak > 1 else ""
+                )
+                await bot.send_message(
+                    uid,
+                    f"🌙 *{name}, как прошёл день?*\n\n"
+                    f"Ты ещё не добавил ни одного приёма пищи сегодня.{streak_warn}\n\n"
+                    f"Отправь фото еды или напиши что ел — займёт 10 секунд 📸",
+                    parse_mode="Markdown",
+                )
                 continue
 
             meals  = get_daily_usage(uid)
