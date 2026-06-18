@@ -374,6 +374,30 @@ def get_active_users():
             )
             return [dict(r) for r in cur.fetchall()]
 
+def get_users_for_notifications():
+    """All users with an active trial or paid subscription.
+    Unlike get_active_users(), does NOT require recent food logs.
+    Used for morning/evening push notifications.
+    """
+    now_iso = _utcnow().isoformat()
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT * FROM users
+                WHERE
+                    (status = 'beta'
+                     AND (trial_expires_at IS NULL OR trial_expires_at > %s))
+                    OR
+                    (status = 'paid'
+                     AND expires_at IS NOT NULL
+                     AND expires_at > %s)
+                ORDER BY telegram_id
+                """,
+                (now_iso, now_iso),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
 # ── Streak ─────────────────────────────────────────────────────────────────
 
 def update_streak(telegram_id, user=None) -> tuple[int, bool]:
