@@ -511,7 +511,7 @@ def get_daily_usage(telegram_id):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(*) FROM usage WHERE telegram_id=%s AND date=%s AND (deleted IS NULL OR deleted=FALSE)",
+                "SELECT COUNT(*) FROM usage WHERE telegram_id=%s AND date=%s",
                 (telegram_id, today),
             )
             return cur.fetchone()[0]
