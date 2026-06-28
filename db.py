@@ -479,6 +479,29 @@ def update_streak(telegram_id, user=None) -> tuple[int, bool]:
 
     return streak, milestone
 
+
+def reset_stale_streaks() -> int:
+    """Reset streak_days to 0 for users who missed yesterday.
+
+    Called nightly so profiles always show the correct (broken) streak value
+    without waiting for the user to log something.
+    Returns the number of users whose streak was reset.
+    """
+    yesterday = (_utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET streak_days = 0
+                   WHERE streak_days > 0
+                     AND (last_active_date IS NULL OR last_active_date < %s)""",
+                (yesterday,)
+            )
+            count = cur.rowcount
+        conn.commit()
+    return count
+
+
 # ── Usage & Macros ─────────────────────────────────────────────────────────
 
 def record_usage(telegram_id, kcal=None, protein=None, fat=None, carbs=None,
