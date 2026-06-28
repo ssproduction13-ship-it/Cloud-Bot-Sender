@@ -11,7 +11,7 @@ import asyncio
   sys.path.insert(0, os.path.dirname(__file__))
 
   from config import BOT_TOKEN
-  from db import init_db
+  from db import init_db, reset_stale_streaks
   from services.notifications import (
       send_morning_checkins,
       send_evening_summaries,
@@ -42,6 +42,16 @@ import asyncio
       log.info(f"Health server running on port {port}")
 
 
+  async def _nightly_streak_reset():
+      """Nightly job: reset streak_days to 0 for users who missed yesterday.
+
+      Ensures the profile shows the correct (broken) streak immediately —
+      without waiting for the user to log something.
+      """
+      count = reset_stale_streaks()
+      log.info("Nightly streak reset: %d users reset to 0", count)
+
+
   async def _fire_missed_notifications(bot: Bot):
       """Send notifications that APScheduler can't recover after a fresh start.
 
@@ -52,16 +62,19 @@ import asyncio
 
       Windows (UTC):
         morning  05:00-10:59  →  send_morning_checkins
-        evening  17:00-21:59  →  send_evening_summaries  (less likely, but safe)
+        streak   16:00-21:59  →  send_streak_reminders  (get_daily_usage guard prevents duplicates)
+        evening  17:00-21:59  →  send_evening_summaries
       """
       now_utc = datetime.now(timezone.utc)
       h = now_utc.hour
       if 5 <= h < 11:
-          log.info("Startup: morning window detected (UTC %02d:%02d) — firing missed morning notifications", h, now_utc.minute)
+          log.info("Startup: morning window (UTC %02d:%02d) — firing missed morning notifications", h, now_utc.minute)
           await send_morning_checkins(bot)
-      elif 17 <= h < 22:
-          log.info("Startup: evening window detected (UTC %02d:%02d) — firing missed evening notifications", h, now_utc.minute)
-          await send_evening_summaries(bot)
+      elif 16 <= h < 22:
+          log.info("Startup: streak/evening window (UTC %02d:%02d) — firing missed streak reminders", h, now_utc.minute)
+          await send_streak_reminders(bot)
+          if h >= 17:
+              await send_evening_summaries(bot)
       else:
           log.info("Startup at UTC %02d:%02d — no missed notification window", h, now_utc.minute)
 
@@ -90,7 +103,13 @@ import asyncio
       scheduler.add_job(send_weekly_reports,    "cron", day_of_week="mon", hour=4, minute=0, args=[bot], misfire_grace_time=7200, coalesce=True)
       scheduler.add_job(send_expiry_reminders,  "cron", hour=4,  minute=30, args=[bot], misfire_grace_time=3600, coalesce=True)
       scheduler.add_job(send_winback_messages,  "cron", hour=4,  minute=45, args=[bot], misfire_grace_time=3600, coalesce=True)
+      # Streak reminders: primary at 16:30 UTC (19:30 MSK), backup at 19:00 UTC (22:00 MSK).
+      # get_daily_usage guard inside send_streak_reminders prevents duplicates.
       scheduler.add_job(send_streak_reminders,  "cron", hour=16, minute=30, args=[bot], misfire_grace_time=7200, coalesce=True)
+      scheduler.add_job(send_streak_reminders,  "cron", hour=19, minute=0,  args=[bot], misfire_grace_time=7200, coalesce=True)
+      # Nightly streak reset at 02:30 UTC: sets streak_days=0 for users who missed yesterday,
+      # so profiles show the correct value without waiting for the next log.
+      scheduler.add_job(_nightly_streak_reset,  "cron", hour=2,  minute=30, misfire_grace_time=7200, coalesce=True)
       scheduler.start()
 
       await run_health_server()
